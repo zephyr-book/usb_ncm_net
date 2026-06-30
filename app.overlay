@@ -1,0 +1,30 @@
+/*
+ * Copyright (c) 2026 Centro de Inovacao EDGE
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * USB CDC-NCM virtual Ethernet link between the ZBook board and a host.
+ *
+ * The RP2350 native USB device controller is left disabled by the board, so we
+ * enable it here and attach a CDC-NCM ethernet function. The board then shows up
+ * on the host as a USB Ethernet adapter; a CoAP server runs over it (see
+ * src/coap_server.c). Host IP is configured manually (board = 192.0.2.1).
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	/*
+	 * Virtual Ethernet endpoint exposed over USB CDC-NCM. remote-mac is the
+	 * host (macOS) end of the link; it must differ from the board's local MAC
+	 * (which is auto-assigned).
+	 */
+	cdc_ncm_eth0: cdc_ncm_eth0 {
+		compatible = "zephyr,cdc-ncm-ethernet";
+		remote-mac-address = "00005E005301";
+	};
+};
+
+/* RP2350 native USB device controller (disabled by the board by default). */
+zephyr_udc0: &usbd {
+	status = "okay";
+};
