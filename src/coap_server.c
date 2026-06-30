@@ -75,4 +75,10 @@ COAP_RESOURCE_DEFINE(hello, coap_server, {
 	}),
 });
 
-COAP_SERVICE_DEFINE(coap_server, NULL, &coap_port, COAP_SERVICE_AUTOSTART);
+/*
+ * Bind to the IPv4 wildcard address. With a NULL host the service prefers IPv6
+ * when CONFIG_NET_IPV6 is enabled (default) and binds in6addr_any only, so IPv4
+ * CoAP requests to 192.0.2.1 get no listener (ICMP port-unreachable). "0.0.0.0"
+ * forces the IPv4 branch in coap_service_start() -> bind INADDR_ANY:5683.
+ */
+COAP_SERVICE_DEFINE(coap_server, "0.0.0.0", &coap_port, COAP_SERVICE_AUTOSTART);

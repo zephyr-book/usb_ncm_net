@@ -17,3 +17,11 @@ zephyr_linker_sources(DATA_SECTIONS sections-ram.ld)
 zephyr_iterable_section(
   NAME coap_resource_coap_server
   GROUP DATA_REGION ${XIP_ALIGN_WITH_INPUT})
+
+# The RP2350 Pico-SDK RNG state lives in an ".uninitialized_data.*" section.
+# Zephyr's template places a ".uninitialized_data (NOLOAD)" section in the middle
+# of the RAM data region, before usbd_context; once the RNG fills it, that NOLOAD
+# gap misaligns the startup .data copy and corrupts usbd_context (USB init fails
+# with -EPERM). Claim those inputs into .data (RWDATA, earlier in link order) so
+# the gap never forms. See sections-rwdata.ld.
+zephyr_linker_sources(RWDATA sections-rwdata.ld)

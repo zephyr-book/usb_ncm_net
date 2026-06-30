@@ -37,6 +37,12 @@ west flash                                     # or: just flash
 
 `-p always` is required when changing board/shield options on an existing `build/`.
 
+**After flashing, reset the board (button or power-cycle).** Flashing over SWD
+resets the MCU without a clean USB detach, so macOS keeps stale enumeration state
+and never activates the NCM data interface. A real reset makes the host
+re-enumerate and bring the link up. Each reset re-enumerates USB, so re-apply the
+host IP (below) afterwards.
+
 ## Connect from macOS
 
 1. Plug the board's USB port into the Mac. Find the new interface:

@@ -16,6 +16,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/net/net_config.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_mgmt.h>
@@ -60,6 +61,7 @@ static void usbd_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *c
 int main(void)
 {
 	struct usbd_context *ctx;
+	int err;
 
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
 	net_mgmt_add_event_callback(&l4_cb);
@@ -78,6 +80,18 @@ int main(void)
 			LOG_ERR("Failed to enable USB device support");
 			return 0;
 		}
+	}
+
+	/*
+	 * Apply the static IP from CONFIG_NET_CONFIG_* to the NCM ethernet
+	 * interface. Zephyr disables NET_CONFIG_AUTO_INIT for USB networking
+	 * classes (the link does not exist until USB is up), so the app must do
+	 * this itself. With CONFIG_NET_CONFIG_INIT_TIMEOUT=0 it just assigns the
+	 * address and returns -- it does not block waiting for the host to attach.
+	 */
+	err = net_config_init_app(NULL, "usb_ncm_net");
+	if (err) {
+		LOG_WRN("net_config_init_app() failed (%d)", err);
 	}
 
 	LOG_INF("USB-NCM up; CoAP server on UDP 5683 (board 192.0.2.1)");
