@@ -11,36 +11,37 @@ openodc_dir := "~/.local/openocd"
 # macOS host setup after flashing (the board is 192.0.2.1):
 #   networksetup -listallhardwareports     # find the new "USB ... " -> en<N>
 #   sudo ifconfig en<N> 192.0.2.2 255.255.255.0 up
-#   ping 192.0.2.1
-#   coap-client -m get coap://192.0.2.1/hello              # brew install libcoap
-#   coap-client -m get coap://192.0.2.1/.well-known/core   # resource discovery
+#   coap-client -m get coap://192.0.2.1/hello               # base (plaintext), brew install libcoap
+#   coap-client -m get coaps://192.0.2.1/led                # DTLS variant (port 5684)
 
 clean:
-    rip build build-min
+    rip build build-dtls
 
-# Development baseline (shell + logging).
+# Base build: plaintext CoAP, minimal IPv4/UDP stack (prj.conf).
 build:
     west build -b zbook/rp2350b/m33
 
-# Minimal / production profile (see minimal.conf), in its own build dir.
-build-min:
-    west build -p always -b zbook/rp2350b/m33 -d build-min -- -DEXTRA_CONF_FILE=minimal.conf
+# DTLS / CoAPS (X.509) variant: prj.conf + dtls.conf, in its own build dir.
+# MBEDTLS_FATAL_WARNINGS=OFF: the pinned tf-psa-crypto has -Werror warnings in
+# upstream library code that aren't ours.
+build-dtls:
+    west build -p always -b zbook/rp2350b/m33 -d build-dtls -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF
 
 flash:
     west flash --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
 
-flash-min:
-    west flash -d build-min --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
+flash-dtls:
+    west flash -d build-dtls --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
 
 erase:
     {{ openocd_bin }} -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "init; reset halt; flash erase_sector 0 0 last; shutdown"
 
-# Regenerate the ROM/RAM reports behind docs/benchmarks.md (both profiles).
-# Pristine-builds each profile, then dumps the size_report trees to stdout.
+# Regenerate the ROM/RAM reports behind docs/benchmarks.md (both variants).
+# Pristine-builds each, then dumps the size_report trees to stdout.
 footprint:
     west build -p always -b zbook/rp2350b/m33 -d build
-    west build -p always -b zbook/rp2350b/m33 -d build-min -- -DEXTRA_CONF_FILE=minimal.conf
+    west build -p always -b zbook/rp2350b/m33 -d build-dtls -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF
     west build -d build -t rom_report
     west build -d build -t ram_report
-    west build -d build-min -t rom_report
-    west build -d build-min -t ram_report
+    west build -d build-dtls -t rom_report
+    west build -d build-dtls -t ram_report

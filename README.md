@@ -5,13 +5,16 @@ that exposes the board to a host computer as a **USB CDC-NCM** virtual Ethernet
 adapter and runs a **CoAP server** over that link. Tested against a macOS-ARM host.
 
 The board takes the static IPv4 address **`192.0.2.1`**; the host configures its end
-of the link (**`192.0.2.2`**) manually. CoAP resources on UDP port **5683**:
+of the link (**`192.0.2.2`**) manually. Two builds:
+
+- **base** (`just build`) — plaintext CoAP on UDP **5683**.
+- **DTLS** (`just build-dtls`) — CoAPS (DTLS 1.2, X.509 cert auth) on UDP **5684**.
+
+CoAP resources:
 
 - `hello` — GET, returns a greeting string.
 - `led` — GET returns the board LED state (`0`/`1`); PUT `0`/`1` (or `off`/`on`)
   sets it. Drives the `led0` alias (blue LED).
-- `.well-known/core` — standard resource discovery (dev build only; disabled in
-  the minimal profile).
 
 This app is a sibling of `esp01_flasher` — same west workspace layout (T2), same
 USB device_next stack, same OpenOCD flash flow.
@@ -27,40 +30,37 @@ USB device_next stack, same OpenOCD flash flow.
   `net_if_ipv4_addr_add()` (no net-config layer); the host is configured by hand.
   (`NET_MGMT` is pulled in unconditionally by the Ethernet L2 that NCM requires,
   but nothing here uses it.)
-- **CoAP**: `src/coap_server.c` declares the service with `COAP_SERVICE_DEFINE(...,
-  COAP_SERVICE_AUTOSTART)`, which runs its own RX/TX thread and binds UDP :5683.
-  Resources are declared at file scope with `COAP_RESOURCE_DEFINE`. `main()` does
-  no socket work.
-- **Console** (UART0, 115200 baud): the **dev** profile has logging + the `net`,
-  `coap_server` and general shells. The **minimal** profile drops the `net` and
-  `coap_server` shells (the `net` shell alone pulls in ~14 KB flash and
-  force-selects IGMP/IP-options) but keeps a bare `CONFIG_SHELL` console +
-  logging.
+- **CoAP**: `src/coap_server.c` declares the service; the plaintext build uses
+  `COAP_SERVICE_DEFINE(..., COAP_SERVICE_AUTOSTART)` (own RX/TX thread, binds UDP
+  :5683). The DTLS build (`CONFIG_NET_SOCKETS_ENABLE_DTLS`) uses
+  `COAPS_SERVICE_DEFINE`, registers the X.509 credentials, and starts CoAPS on
+  :5684 from `coap_server_start()` (called by `main()`). Resources are file-scope
+  `COAP_RESOURCE_DEFINE` blocks, shared by both.
+- **Console** (UART0, 115200 baud): a bare `CONFIG_SHELL` console + logging. No
+  `net`/`coap_server` shell commands (the `net` shell alone pulls ~14 KB flash and
+  force-selects IGMP/IP-options).
 
 ## Build & flash
 
-Run from inside this directory. Two profiles:
+Run from inside this directory. `prj.conf` is the minimal base; `dtls.conf` is an
+overlay for the CoAPS variant.
 
 ```bash
-# Development baseline (shell + logging, easy to debug):
+# Base: plaintext CoAP (UDP 5683)
 west build -p always -b zbook/rp2350b/m33                              # or: just build
 west flash                                                             # or: just flash
 
-# Minimal networking-stack profile (single CoAP client):
-west build -p always -b zbook/rp2350b/m33 -d build-min \
-      -- -DEXTRA_CONF_FILE=minimal.conf                                # or: just build-min
-west flash -d build-min                                                # or: just flash-min
+# DTLS/CoAPS variant: DTLS 1.2 + X.509, CoAPS on UDP 5684
+west build -p always -b zbook/rp2350b/m33 -d build-dtls \
+      -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF       # or: just build-dtls
+west flash -d build-dtls                                               # or: just flash-dtls
 ```
 
-`minimal.conf` layers on top of `prj.conf` for a production, single-CoAP-client
-build: it trims the net pools/contexts (`NET_MAX_CONTEXTS=1`), turns off IPv4
-features unused by unicast CoAP (IGMP, IP header options, DSCP/ECN, gratuitous
-ARP), trims the CoAP knobs (no `.well-known/core`, 64-byte blocks, no observers,
-one pending message), and drops the `net` + `coap_server` shells. It keeps a bare
-console + logging. On `zbook/rp2350b/m33` this takes the image from
-192,396 / 53,904 B (flash/RAM) to **153,988 / 39,704** — see the doc below for
-the per-layer breakdown. `-p always` is required when changing board/shield
-options on an existing build dir.
+`dtls.conf` layers mbedTLS 4.x (+ tf-psa-crypto) and turns the CoAP server into a
+cert-authenticated CoAPS server (ECDHE-ECDSA-AES128-GCM-SHA256, self-signed EC
+P-256 in `certs/`). `-DMBEDTLS_FATAL_WARNINGS=OFF` silences `-Werror` warnings in
+upstream tf-psa-crypto code. The DTLS build needs the `mbedtls` + `tf-psa-crypto`
+west modules (already in `west.yml`; run `west update` if not fetched).
 
 See [`docs/benchmarks.md`](docs/benchmarks.md) for measured memory (per-layer
 ROM/RAM, the cost of "network over USB" and the CoAP stack isolated, side-by-side

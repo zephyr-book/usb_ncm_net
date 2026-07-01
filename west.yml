@@ -22,6 +22,8 @@ manifest:
                                   - cmsis_6
                                   - fatfs
                                   - littlefs
+                                  - mbedtls
+                                  - tf-psa-crypto
 
                 # Board support shipped as a Zephyr module (provides boards/ via module.yml).
                 - name: zbook

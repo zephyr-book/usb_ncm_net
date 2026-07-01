@@ -16,6 +16,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "coap_server.h"
+
 #include <string.h>
 
 #include <zephyr/device.h>
@@ -24,11 +26,19 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/coap.h>
 #include <zephyr/net/coap_service.h>
+#if defined(CONFIG_NET_SOCKETS_ENABLE_DTLS)
+#include <zephyr/net/tls_credentials.h>
+#endif
 
 LOG_MODULE_REGISTER(coap_server, LOG_LEVEL_INF);
 
+#if defined(CONFIG_NET_SOCKETS_ENABLE_DTLS)
+/* CoAPS (secure) UDP port. */
+static uint16_t coap_port = 5684;
+#else
 /* Standard CoAP UDP port. */
 static uint16_t coap_port = 5683;
+#endif
 
 static int hello_get(struct coap_resource *resource, struct coap_packet *request,
 		     struct net_sockaddr *addr, net_socklen_t addr_len)
@@ -188,10 +198,71 @@ COAP_RESOURCE_DEFINE(led, coap_server, {
 	.path = led_path,
 });
 
+#if defined(CONFIG_NET_SOCKETS_ENABLE_DTLS)
+
 /*
- * Bind to the IPv4 wildcard address. With a NULL host the service prefers IPv6
- * when CONFIG_NET_IPV6 is enabled (default) and binds in6addr_any only, so IPv4
- * CoAP requests to 192.0.2.1 get no listener (ICMP port-unreachable). "0.0.0.0"
- * forces the IPv4 branch in coap_service_start() -> bind INADDR_ANY:5683.
+ * Self-signed EC P-256 server certificate + PKCS#8 key (in certs/, DER), converted
+ * to C arrays by CMake (generate_inc_file_for_target). DEV credentials -- replace
+ * before shipping.
+ */
+#define SERVER_CERT_TAG 1
+
+static const unsigned char server_cert[] = {
+#include "coaps-server-cert.der.inc"
+};
+static const unsigned char server_key[] = {
+#include "coaps-server-key.der.inc"
+};
+static const sec_tag_t sec_tags[] = {SERVER_CERT_TAG};
+
+/*
+ * CoAPS is NOT autostarted: the credentials must be registered before the
+ * socket is created, so coap_server_start() adds them and then starts the
+ * service. Bind the IPv4 wildcard (host "0.0.0.0").
+ */
+/* Last arg is the sec-tag list size in BYTES (sizeof), not the element count. */
+COAPS_SERVICE_DEFINE(coap_server, "0.0.0.0", &coap_port, 0, sec_tags, sizeof(sec_tags));
+
+int coap_server_start(void)
+{
+	int err;
+
+	err = tls_credential_add(SERVER_CERT_TAG, TLS_CREDENTIAL_SERVER_CERTIFICATE, server_cert,
+				 sizeof(server_cert));
+	if (err) {
+		LOG_ERR("Failed to add server certificate (%d)", err);
+		return err;
+	}
+
+	err = tls_credential_add(SERVER_CERT_TAG, TLS_CREDENTIAL_PRIVATE_KEY, server_key,
+				 sizeof(server_key));
+	if (err) {
+		LOG_ERR("Failed to add private key (%d)", err);
+		return err;
+	}
+
+	err = coap_service_start(&coap_server);
+	if (err) {
+		LOG_ERR("Failed to start CoAPS service (%d)", err);
+		return err;
+	}
+
+	LOG_INF("CoAPS server on UDP %u (DTLS, X.509 EC P-256)", coap_port);
+	return 0;
+}
+
+#else /* plaintext CoAP */
+
+/*
+ * Bind the IPv4 wildcard ("0.0.0.0") so unicast CoAP stays reachable at
+ * 192.0.2.1. The plaintext service autostarts on the CoAP server thread.
  */
 COAP_SERVICE_DEFINE(coap_server, "0.0.0.0", &coap_port, COAP_SERVICE_AUTOSTART);
+
+int coap_server_start(void)
+{
+	LOG_INF("CoAP server on UDP %u", coap_port);
+	return 0;
+}
+
+#endif /* CONFIG_NET_SOCKETS_ENABLE_DTLS */

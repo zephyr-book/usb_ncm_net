@@ -13,6 +13,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "coap_server.h"
 #include "usbd_setup.h"
 
 #include <zephyr/kernel.h>
@@ -93,6 +94,11 @@ int main(void)
 
 	(void)assign_static_ipv4();
 
-	LOG_INF("USB-NCM up; CoAP server on UDP 5683 (board " BOARD_IPV4_ADDR ")");
+	/* Plaintext CoAP autostarts; the DTLS variant registers X.509 creds and
+	 * starts CoAPS here (after the interface exists).
+	 */
+	(void)coap_server_start();
+
+	LOG_INF("USB-NCM up (board " BOARD_IPV4_ADDR ")");
 	return 0;
 }
