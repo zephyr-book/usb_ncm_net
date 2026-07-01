@@ -1,11 +1,16 @@
-# Memory footprint: USB-NCM + CoAP vs USB-ACM + UART + binary protocol
+# Benchmarks: memory & performance — USB-NCM+CoAP vs USB-ACM+UART+binary protocol
 
 Board `zbook/rp2350b/m33` (RP2350B: 2 MB flash, 520 KB RAM), Zephyr v4.4.0,
-zephyr-sdk arm-zephyr-eabi, `-Os`. All numbers are **bytes**, measured — not
-estimated — from `west build -t rom_report` / `-t ram_report`
-(`scripts/footprint/size_report`, which attributes every symbol to its
-`ZEPHYR_BASE` source path) and cross-checked against `zephyr.map`. Regenerate
-with `just footprint` (see bottom).
+zephyr-sdk arm-zephyr-eabi, `-Os`. Two dimensions are measured:
+
+- **Memory** — bytes, from `west build -t rom_report` / `-t ram_report`
+  (`scripts/footprint/size_report`, which attributes every symbol to its
+  `ZEPHYR_BASE` source path), cross-checked against `zephyr.map`.
+- **Performance** — CoAP round-trip latency, from `scripts/coap_latency.py`
+  (times Confirmable requests over the live USB-NCM link).
+
+Regenerate with `just footprint` and `python3 scripts/coap_latency.py`
+(see bottom).
 
 Two firmwares are compared:
 
@@ -39,6 +44,9 @@ Two firmwares are compared:
 - On the RP2350B that is **~1.1 % of flash and ~2 % of RAM** — negligible
   headroom impact. The interoperability/maintainability win of standard CoAP +
   IP comes at a small, fixed, well-understood memory cost.
+- **CoAP round-trip latency over USB-NCM: ~2.1 ms median, ~3 ms p99, 0 % loss** —
+  transport-bound (the CoAP handler cost is negligible; the floor is USB
+  full-speed frame timing). See *Performance* below.
 
 ## Whole-image totals
 
@@ -145,6 +153,38 @@ can't be removed while keeping IPv4. The remaining core is the fixed cost of
 having IP/UDP sockets over Ethernet — exactly what the ACM+binary approach avoids
 by doing raw byte framing.
 
+## Performance — CoAP round-trip latency
+
+Confirmable (CON) CoAP round trips to the board over the live USB-NCM link,
+measured from the macOS host with `scripts/coap_latency.py` (one persistent UDP
+socket, so no per-request process overhead — unlike `coap-client` in a shell
+loop). Minimal build, 1000 samples per endpoint after 50 warm-up, **0 % loss**:
+
+| Endpoint | median | mean | p95 | p99 | max | stddev |
+|---|--:|--:|--:|--:|--:|--:|
+| `GET /hello` | 2.08 | 2.17 | 2.55 | 3.57 | 14.55 | 0.60 |
+| `GET /led`   | 2.05 | 2.11 | 2.45 | 3.11 |  5.08 | 0.26 |
+| `PUT /led=1` | 2.06 | 2.11 | 2.49 | 3.07 |  9.95 | 0.34 |
+
+*(milliseconds; full CON round trip: host → board IP/UDP/CoAP + handler → host)*
+
+- **~2.1 ms median, ~2.5 ms p95, ~3 ms p99, 0 % loss.**
+- **Transport-bound, not compute-bound.** All three endpoints agree within
+  ~0.06 ms — `GET /hello` (static string), `GET /led` (reads a flag) and
+  `PUT /led=1` (parses a payload + drives a GPIO) are indistinguishable, so the
+  CoAP parse + IP/UDP + resource-handler cost is negligible; essentially all
+  ~2 ms is the USB-NCM transport.
+- **The ~2 ms floor is USB full-speed timing.** RP2350 USB is full-speed (1 ms
+  frame intervals); a round trip crosses the host→device and device→host bulk
+  endpoints, each gated by the host's ~1 ms USB polling ≈ two frame times. It
+  won't drop much without high-speed USB or host-side tuning.
+- **Tail (5–15 ms outliers) is host-side jitter** — macOS USB/NCM scheduling and
+  NTB buffering, not the board (p99 stays ~3 ms; only rare samples spike).
+
+Not yet measured: sustained throughput, and the ACM+UART+binary latency baseline
+for a direct comparison (a raw framed request/response over the CDC-ACM serial
+port at a given baud). Those are the remaining performance follow-ups.
+
 ## Notes & caveats
 
 - Report-tool totals reconcile with `west`: ROM within ~20 B; the `ram_report`
@@ -162,17 +202,24 @@ by doing raw byte framing.
 - The 4 KB CDC-NCM endpoint pool is `2 × 2048` hardcoded in the driver; halving
   it needs an upstream patch plus capping the interface MTU below ~980 B — not
   worth 2 KB on this part.
-- Performance (CoAP round-trip latency / throughput over NCM vs raw UART framing)
-  is **not** covered here — separate follow-up.
+- CoAP round-trip latency is covered above. Sustained throughput and the
+  ACM+UART+binary latency baseline (for a direct performance comparison) are the
+  remaining follow-ups.
+- Latency figures are from one representative run on a macOS-ARM host; the tail
+  reflects host USB scheduling, so absolute p99/max vary a little run to run
+  while median/p95 are stable. Reproduce with `scripts/coap_latency.py`.
 
 ## Regenerate
 
 ```bash
-# from inside usb_ncm_net/
+# from inside usb_ncm_net/ --- memory
 just footprint          # builds both profiles and dumps ram/rom reports
 
 # ACM baseline (from inside esp01_flasher/):
 west build -p always -b zbook/rp2350b/m33 -d build
 west build -d build -t rom_report
 west build -d build -t ram_report
+
+# performance (host, with the NCM interface up at 192.0.2.2):
+python3 scripts/coap_latency.py           # CoAP round-trip latency
 ```

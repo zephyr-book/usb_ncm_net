@@ -35,7 +35,7 @@ flash-min:
 erase:
     {{ openocd_bin }} -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "init; reset halt; flash erase_sector 0 0 last; shutdown"
 
-# Regenerate the ROM/RAM reports behind docs/memory-footprint.md (both profiles).
+# Regenerate the ROM/RAM reports behind docs/benchmarks.md (both profiles).
 # Pristine-builds each profile, then dumps the size_report trees to stdout.
 footprint:
     west build -p always -b zbook/rp2350b/m33 -d build

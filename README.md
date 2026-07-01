@@ -62,10 +62,10 @@ console + logging. On `zbook/rp2350b/m33` this takes the image from
 the per-layer breakdown. `-p always` is required when changing board/shield
 options on an existing build dir.
 
-See [`docs/memory-footprint.md`](docs/memory-footprint.md) for a measured
-per-layer ROM/RAM breakdown — the cost of "network over USB" and the CoAP stack
-isolated separately, and a side-by-side against the USB-ACM + UART approach.
-Regenerate the underlying reports with `just footprint`.
+See [`docs/benchmarks.md`](docs/benchmarks.md) for measured memory (per-layer
+ROM/RAM, the cost of "network over USB" and the CoAP stack isolated, side-by-side
+against the USB-ACM + UART approach) and performance (CoAP round-trip latency).
+Regenerate with `just footprint` and `python3 scripts/coap_latency.py`.
 
 **After flashing, reset the board (button or power-cycle).** Flashing over SWD
 resets the MCU without a clean USB detach, so macOS keeps stale enumeration state
