@@ -57,3 +57,8 @@ build*/
 .cache/
 
 .clangd
+
+# Python (scripts/: coap_latency.py, coap_cli.py)
+__pycache__/
+*.pyc
+.venv/
