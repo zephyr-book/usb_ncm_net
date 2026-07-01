@@ -16,16 +16,31 @@ openodc_dir := "~/.local/openocd"
 #   coap-client -m get coap://192.0.2.1/.well-known/core   # resource discovery
 
 clean:
-    rip build
+    rip build build-min
 
+# Development baseline (shell + logging).
 build:
     west build -b zbook/rp2350b/m33
 
-build-wifi:
-    west build -b zbook/rp2350b/m33 --shield zbook_wifi
+# Minimal / production profile (see minimal.conf), in its own build dir.
+build-min:
+    west build -p always -b zbook/rp2350b/m33 -d build-min -- -DEXTRA_CONF_FILE=minimal.conf
 
 flash:
     west flash --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
 
+flash-min:
+    west flash -d build-min --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
+
 erase:
     {{ openocd_bin }} -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "init; reset halt; flash erase_sector 0 0 last; shutdown"
+
+# Regenerate the ROM/RAM reports behind docs/memory-footprint.md (both profiles).
+# Pristine-builds each profile, then dumps the size_report trees to stdout.
+footprint:
+    west build -p always -b zbook/rp2350b/m33 -d build
+    west build -p always -b zbook/rp2350b/m33 -d build-min -- -DEXTRA_CONF_FILE=minimal.conf
+    west build -d build -t rom_report
+    west build -d build -t ram_report
+    west build -d build-min -t rom_report
+    west build -d build-min -t ram_report

@@ -23,7 +23,6 @@
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/coap.h>
-#include <zephyr/net/coap_link_format.h>
 #include <zephyr/net/coap_service.h>
 
 LOG_MODULE_REGISTER(coap_server, LOG_LEVEL_INF);
@@ -32,7 +31,7 @@ LOG_MODULE_REGISTER(coap_server, LOG_LEVEL_INF);
 static uint16_t coap_port = 5683;
 
 static int hello_get(struct coap_resource *resource, struct coap_packet *request,
-		     struct sockaddr *addr, socklen_t addr_len)
+		     struct net_sockaddr *addr, net_socklen_t addr_len)
 {
 	static const char payload[] = "Hello from ZBook over USB-NCM\n";
 	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
@@ -67,18 +66,10 @@ static int hello_get(struct coap_resource *resource, struct coap_packet *request
 }
 
 static const char *const hello_path[] = {"hello", NULL};
-static const char *const hello_attributes[] = {
-	"title=\"Hello\"",
-	"rt=text",
-	NULL,
-};
 
 COAP_RESOURCE_DEFINE(hello, coap_server, {
 	.get = hello_get,
 	.path = hello_path,
-	.metadata = &((struct coap_core_metadata){
-		.attributes = hello_attributes,
-	}),
 });
 
 /* Board LED behind the "led" resource (led0 alias = blue LED, active-low). */
@@ -116,7 +107,7 @@ static int parse_onoff(const uint8_t *payload, uint16_t len)
 }
 
 static int led_get(struct coap_resource *resource, struct coap_packet *request,
-		   struct sockaddr *addr, socklen_t addr_len)
+		   struct net_sockaddr *addr, net_socklen_t addr_len)
 {
 	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
 	struct coap_packet response;
@@ -151,7 +142,7 @@ static int led_get(struct coap_resource *resource, struct coap_packet *request,
 }
 
 static int led_put(struct coap_resource *resource, struct coap_packet *request,
-		   struct sockaddr *addr, socklen_t addr_len)
+		   struct net_sockaddr *addr, net_socklen_t addr_len)
 {
 	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
 	struct coap_packet response;
@@ -190,19 +181,11 @@ static int led_put(struct coap_resource *resource, struct coap_packet *request,
 }
 
 static const char *const led_path[] = {"led", NULL};
-static const char *const led_attributes[] = {
-	"title=\"LED\"",
-	"rt=led",
-	NULL,
-};
 
 COAP_RESOURCE_DEFINE(led, coap_server, {
 	.get = led_get,
 	.put = led_put,
 	.path = led_path,
-	.metadata = &((struct coap_core_metadata){
-		.attributes = led_attributes,
-	}),
 });
 
 /*

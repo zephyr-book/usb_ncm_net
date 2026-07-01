@@ -10,7 +10,8 @@ of the link (**`192.0.2.2`**) manually. CoAP resources on UDP port **5683**:
 - `hello` — GET, returns a greeting string.
 - `led` — GET returns the board LED state (`0`/`1`); PUT `0`/`1` (or `off`/`on`)
   sets it. Drives the `led0` alias (blue LED).
-- `.well-known/core` — standard resource discovery.
+- `.well-known/core` — standard resource discovery (dev build only; disabled in
+  the minimal profile).
 
 This app is a sibling of `esp01_flasher` — same west workspace layout (T2), same
 USB device_next stack, same OpenOCD flash flow.
@@ -21,25 +22,47 @@ USB device_next stack, same OpenOCD flash flow.
   board) is enabled in `app.overlay`, with a `zephyr,cdc-ncm-ethernet` function
   attached. `src/usbd_setup.c` builds the device_next context (single full-speed
   config, CDC-NCM class, IAD code triple) and `src/main.c` enables it.
-- **Networking**: `CONFIG_NET_CONFIG_SETTINGS` assigns `192.0.2.1/24` to the NCM
-  Ethernet interface at boot. No DHCP — the host is configured by hand.
+- **Networking**: IPv4-only, UDP-only — no IPv6, no TCP, no DHCP, no connection
+  manager. `main()` assigns the static address `192.0.2.1/24` directly with
+  `net_if_ipv4_addr_add()` (no net-config layer); the host is configured by hand.
+  (`NET_MGMT` is pulled in unconditionally by the Ethernet L2 that NCM requires,
+  but nothing here uses it.)
 - **CoAP**: `src/coap_server.c` declares the service with `COAP_SERVICE_DEFINE(...,
   COAP_SERVICE_AUTOSTART)`, which runs its own RX/TX thread and binds UDP :5683.
   Resources are declared at file scope with `COAP_RESOURCE_DEFINE`. `main()` does
   no socket work.
 - **Console**: logging + the `net` and `coap_server` shells are on UART0
-  (115200 baud) for diagnostics.
+  (115200 baud) in both build profiles (the minimal profile keeps them so the
+  networking-stack footprint can be compared with everything else held equal).
 
 ## Build & flash
 
-Run from inside this directory.
+Run from inside this directory. Two profiles:
 
 ```bash
-west build -p always -b zbook/rp2350b/m33      # or: just build
-west flash                                     # or: just flash
+# Development baseline (shell + logging, easy to debug):
+west build -p always -b zbook/rp2350b/m33                              # or: just build
+west flash                                                             # or: just flash
+
+# Minimal networking-stack profile (single CoAP client):
+west build -p always -b zbook/rp2350b/m33 -d build-min \
+      -- -DEXTRA_CONF_FILE=minimal.conf                                # or: just build-min
+west flash -d build-min                                                # or: just flash-min
 ```
 
-`-p always` is required when changing board/shield options on an existing `build/`.
+`minimal.conf` layers on top of `prj.conf` and trims **only the networking stack**
+— packet/buffer pools, network contexts (one UDP socket → `NET_MAX_CONTEXTS=1`),
+and CoAP parameters (no `.well-known/core`, 64-byte blocks, no observers, one
+pending message) — while leaving the shell, logging and stacks identical to the
+baseline. This isolates the network-stack footprint for comparison: on
+`zbook/rp2350b/m33` it drops RAM from ~53.9 KB to ~40.3 KB (flash is nearly
+unchanged, since the savings are buffer RAM). `-p always` is required when
+changing board/shield options on an existing build dir.
+
+See [`docs/memory-footprint.md`](docs/memory-footprint.md) for a measured
+per-layer ROM/RAM breakdown — the cost of "network over USB" and the CoAP stack
+isolated separately, and a side-by-side against the USB-ACM + UART approach.
+Regenerate the underlying reports with `just footprint`.
 
 **After flashing, reset the board (button or power-cycle).** Flashing over SWD
 resets the MCU without a clean USB detach, so macOS keeps stale enumeration state

@@ -3,10 +3,11 @@
  * @brief USB-NCM networking bring-up.
  *
  * Brings the RP2350 native USB device controller up as a CDC-NCM virtual
- * Ethernet adapter. Static IPv4 (board = 192.0.2.1) is applied to that interface
- * by CONFIG_NET_CONFIG_SETTINGS, and the CoAP server (src/coap_server.c)
- * autostarts on its own thread. So main() only enables USB and reports link
- * state; the host configures its end (192.0.2.2) by hand. See README.md.
+ * Ethernet adapter and assigns a static IPv4 address to it directly -- no DHCP,
+ * no connection-manager, no net-config layer. The CoAP server
+ * (src/coap_server.c) autostarts on its own thread, so main() only enables USB,
+ * sets the address, and returns. The host configures its end (192.0.2.2) by
+ * hand. See README.md.
  *
  * @copyright Copyright (c) 2026 Centro de Inovacao EDGE
  * SPDX-License-Identifier: Apache-2.0
@@ -16,30 +17,15 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/net/net_config.h>
-#include <zephyr/net/net_event.h>
 #include <zephyr/net/net_if.h>
-#include <zephyr/net/net_mgmt.h>
+#include <zephyr/net/net_ip.h>
 #include <zephyr/usb/usbd.h>
 
 LOG_MODULE_REGISTER(usb_ncm_net, LOG_LEVEL_INF);
 
-#define L4_EVENT_MASK (NET_EVENT_L4_CONNECTED | NET_EVENT_L4_DISCONNECTED)
-
-static struct net_mgmt_event_callback l4_cb;
-
-static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
-			     struct net_if *iface)
-{
-	ARG_UNUSED(cb);
-	ARG_UNUSED(iface);
-
-	if (event == NET_EVENT_L4_CONNECTED) {
-		LOG_INF("Network up -- CoAP server at coap://192.0.2.1/hello");
-	} else if (event == NET_EVENT_L4_DISCONNECTED) {
-		LOG_INF("Network down");
-	}
-}
+/* Static IPv4 on the NCM interface. The host uses 192.0.2.2 (configured by hand). */
+#define BOARD_IPV4_ADDR    "192.0.2.1"
+#define BOARD_IPV4_NETMASK "255.255.255.0"
 
 static void usbd_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const msg)
 {
@@ -58,13 +44,36 @@ static void usbd_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *c
 	}
 }
 
+/* Assign the static IPv4 address directly -- no DHCP, no net_config layer. */
+static int assign_static_ipv4(void)
+{
+	struct net_if *iface = net_if_get_default();
+	struct net_in_addr addr;
+	struct net_in_addr netmask;
+
+	if (iface == NULL) {
+		LOG_ERR("No default network interface");
+		return -ENODEV;
+	}
+
+	if (net_addr_pton(NET_AF_INET, BOARD_IPV4_ADDR, &addr) < 0 ||
+	    net_addr_pton(NET_AF_INET, BOARD_IPV4_NETMASK, &netmask) < 0) {
+		return -EINVAL;
+	}
+
+	if (net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0) == NULL) {
+		LOG_ERR("Failed to add IPv4 address");
+		return -EADDRNOTAVAIL;
+	}
+
+	(void)net_if_ipv4_set_netmask_by_addr(iface, &addr, &netmask);
+
+	return 0;
+}
+
 int main(void)
 {
 	struct usbd_context *ctx;
-	int err;
-
-	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
-	net_mgmt_add_event_callback(&l4_cb);
 
 	ctx = ncm_usbd_init(usbd_msg_cb);
 	if (ctx == NULL) {
@@ -82,18 +91,8 @@ int main(void)
 		}
 	}
 
-	/*
-	 * Apply the static IP from CONFIG_NET_CONFIG_* to the NCM ethernet
-	 * interface. Zephyr disables NET_CONFIG_AUTO_INIT for USB networking
-	 * classes (the link does not exist until USB is up), so the app must do
-	 * this itself. With CONFIG_NET_CONFIG_INIT_TIMEOUT=0 it just assigns the
-	 * address and returns -- it does not block waiting for the host to attach.
-	 */
-	err = net_config_init_app(NULL, "usb_ncm_net");
-	if (err) {
-		LOG_WRN("net_config_init_app() failed (%d)", err);
-	}
+	(void)assign_static_ipv4();
 
-	LOG_INF("USB-NCM up; CoAP server on UDP 5683 (board 192.0.2.1)");
+	LOG_INF("USB-NCM up; CoAP server on UDP 5683 (board " BOARD_IPV4_ADDR ")");
 	return 0;
 }
