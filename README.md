@@ -5,8 +5,12 @@ that exposes the board to a host computer as a **USB CDC-NCM** virtual Ethernet
 adapter and runs a **CoAP server** over that link. Tested against a macOS-ARM host.
 
 The board takes the static IPv4 address **`192.0.2.1`**; the host configures its end
-of the link (**`192.0.2.2`**) manually. A single `hello` CoAP resource plus the
-standard `.well-known/core` discovery resource are served on UDP port **5683**.
+of the link (**`192.0.2.2`**) manually. CoAP resources on UDP port **5683**:
+
+- `hello` — GET, returns a greeting string.
+- `led` — GET returns the board LED state (`0`/`1`); PUT `0`/`1` (or `off`/`on`)
+  sets it. Drives the `led0` alias (blue LED).
+- `.well-known/core` — standard resource discovery.
 
 This app is a sibling of `esp01_flasher` — same west workspace layout (T2), same
 USB device_next stack, same OpenOCD flash flow.
@@ -59,6 +63,10 @@ host IP (below) afterwards.
    ```bash
    coap-client -m get coap://192.0.2.1/hello              # -> "Hello from ZBook over USB-NCM"
    coap-client -m get coap://192.0.2.1/.well-known/core   # resource discovery
+
+   coap-client -m put -e 1 coap://192.0.2.1/led           # LED on  (-> 2.04 Changed)
+   coap-client -m put -e 0 coap://192.0.2.1/led           # LED off
+   coap-client -m get coap://192.0.2.1/led                # -> "1" or "0"
    ```
    Python alternative: `pip install aiocoap` then
    `aiocoap-client coap://192.0.2.1/hello`.
