@@ -15,7 +15,7 @@ openodc_dir := "~/.local/openocd"
 #   coap-client -m get coaps://192.0.2.1/led                # DTLS variant (port 5684)
 
 clean:
-    rip build build-dtls
+    rip build build-dtls build-perf build-dtls-perf
 
 # Base build: plaintext CoAP, minimal IPv4/UDP stack (prj.conf).
 build:
@@ -27,11 +27,34 @@ build:
 build-dtls:
     west build -p always -b zbook/rp2350b/m33 -d build-dtls -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF
 
+# Performance-measurement builds: shell + logging off (perf.conf) so they don't
+# perturb the scripts/coap_latency.py timing. Plaintext and DTLS variants.
+build-perf:
+    west build -p always -b zbook/rp2350b/m33 -d build-perf -- -DEXTRA_CONF_FILE=perf.conf
+
+build-dtls-perf:
+    west build -p always -b zbook/rp2350b/m33 -d build-dtls-perf -- -DEXTRA_CONF_FILE="dtls.conf;perf.conf" -DMBEDTLS_FATAL_WARNINGS=OFF
+
 flash:
     west flash --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
 
 flash-dtls:
     west flash -d build-dtls --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
+
+flash-perf:
+    west flash -d build-perf --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
+
+flash-dtls-perf:
+    west flash -d build-dtls-perf --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
+
+# Send a CoAP request via the Python client (coap-client-style). Works over
+# plaintext AND DTLS-PSK -- unlike libcoap coap-client, which can't negotiate the
+# board's PSK-CCM8 suite. DTLS needs `pip install python-mbedtls`. Examples:
+#   just coap get hello
+#   just coap get led
+#   just coap --dtls put led -e 1
+coap *args:
+    python3 scripts/coap_cli.py {{ args }}
 
 erase:
     {{ openocd_bin }} -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "init; reset halt; flash erase_sector 0 0 last; shutdown"
