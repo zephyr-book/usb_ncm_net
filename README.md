@@ -31,9 +31,11 @@ USB device_next stack, same OpenOCD flash flow.
   COAP_SERVICE_AUTOSTART)`, which runs its own RX/TX thread and binds UDP :5683.
   Resources are declared at file scope with `COAP_RESOURCE_DEFINE`. `main()` does
   no socket work.
-- **Console**: logging + the `net` and `coap_server` shells are on UART0
-  (115200 baud) in both build profiles (the minimal profile keeps them so the
-  networking-stack footprint can be compared with everything else held equal).
+- **Console** (UART0, 115200 baud): the **dev** profile has logging + the `net`,
+  `coap_server` and general shells. The **minimal** profile drops the `net` and
+  `coap_server` shells (the `net` shell alone pulls in ~14 KB flash and
+  force-selects IGMP/IP-options) but keeps a bare `CONFIG_SHELL` console +
+  logging.
 
 ## Build & flash
 
@@ -50,14 +52,15 @@ west build -p always -b zbook/rp2350b/m33 -d build-min \
 west flash -d build-min                                                # or: just flash-min
 ```
 
-`minimal.conf` layers on top of `prj.conf` and trims **only the networking stack**
-— packet/buffer pools, network contexts (one UDP socket → `NET_MAX_CONTEXTS=1`),
-and CoAP parameters (no `.well-known/core`, 64-byte blocks, no observers, one
-pending message) — while leaving the shell, logging and stacks identical to the
-baseline. This isolates the network-stack footprint for comparison: on
-`zbook/rp2350b/m33` it drops RAM from ~53.9 KB to ~40.3 KB (flash is nearly
-unchanged, since the savings are buffer RAM). `-p always` is required when
-changing board/shield options on an existing build dir.
+`minimal.conf` layers on top of `prj.conf` for a production, single-CoAP-client
+build: it trims the net pools/contexts (`NET_MAX_CONTEXTS=1`), turns off IPv4
+features unused by unicast CoAP (IGMP, IP header options, DSCP/ECN, gratuitous
+ARP), trims the CoAP knobs (no `.well-known/core`, 64-byte blocks, no observers,
+one pending message), and drops the `net` + `coap_server` shells. It keeps a bare
+console + logging. On `zbook/rp2350b/m33` this takes the image from
+192,396 / 53,904 B (flash/RAM) to **153,988 / 39,704** — see the doc below for
+the per-layer breakdown. `-p always` is required when changing board/shield
+options on an existing build dir.
 
 See [`docs/memory-footprint.md`](docs/memory-footprint.md) for a measured
 per-layer ROM/RAM breakdown — the cost of "network over USB" and the CoAP stack
