@@ -201,19 +201,18 @@ COAP_RESOURCE_DEFINE(led, coap_server, {
 #if defined(CONFIG_NET_SOCKETS_ENABLE_DTLS)
 
 /*
- * Self-signed EC P-256 server certificate + PKCS#8 key (in certs/, DER), converted
- * to C arrays by CMake (generate_inc_file_for_target). DEV credentials -- replace
- * before shipping.
+ * Pre-shared key + identity (TLS_PSK_WITH_AES_128_CCM_8). DEV credentials --
+ * replace and provision out-of-band before shipping. The client must use the
+ * same identity + key (see scripts/coap_latency.py).
  */
-#define SERVER_CERT_TAG 1
+#define PSK_TAG 1
 
-static const unsigned char server_cert[] = {
-#include "coaps-server-cert.der.inc"
-};
-static const unsigned char server_key[] = {
-#include "coaps-server-key.der.inc"
-};
-static const sec_tag_t sec_tags[] = {SERVER_CERT_TAG};
+static const uint8_t psk_key[] = {
+	'z', 'b', 'o', 'o', 'k', '-', 'd', 't',
+	'l', 's', '-', 'p', 's', 'k', '!', '!',
+}; /* 16-byte (128-bit) DEV key */
+static const char psk_id[] = "zbook";
+static const sec_tag_t sec_tags[] = {PSK_TAG};
 
 /*
  * CoAPS is NOT autostarted: the credentials must be registered before the
@@ -227,17 +226,15 @@ int coap_server_start(void)
 {
 	int err;
 
-	err = tls_credential_add(SERVER_CERT_TAG, TLS_CREDENTIAL_SERVER_CERTIFICATE, server_cert,
-				 sizeof(server_cert));
+	err = tls_credential_add(PSK_TAG, TLS_CREDENTIAL_PSK, psk_key, sizeof(psk_key));
 	if (err) {
-		LOG_ERR("Failed to add server certificate (%d)", err);
+		LOG_ERR("Failed to add PSK (%d)", err);
 		return err;
 	}
 
-	err = tls_credential_add(SERVER_CERT_TAG, TLS_CREDENTIAL_PRIVATE_KEY, server_key,
-				 sizeof(server_key));
+	err = tls_credential_add(PSK_TAG, TLS_CREDENTIAL_PSK_ID, psk_id, sizeof(psk_id) - 1);
 	if (err) {
-		LOG_ERR("Failed to add private key (%d)", err);
+		LOG_ERR("Failed to add PSK identity (%d)", err);
 		return err;
 	}
 
@@ -247,7 +244,7 @@ int coap_server_start(void)
 		return err;
 	}
 
-	LOG_INF("CoAPS server on UDP %u (DTLS, X.509 EC P-256)", coap_port);
+	LOG_INF("CoAPS server on UDP %u (DTLS, PSK AES-128-CCM-8)", coap_port);
 	return 0;
 }
 

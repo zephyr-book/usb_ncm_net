@@ -8,7 +8,7 @@ The board takes the static IPv4 address **`192.0.2.1`**; the host configures its
 of the link (**`192.0.2.2`**) manually. Two builds:
 
 - **base** (`just build`) — plaintext CoAP on UDP **5683**.
-- **DTLS** (`just build-dtls`) — CoAPS (DTLS 1.2, X.509 cert auth) on UDP **5684**.
+- **DTLS** (`just build-dtls`) — CoAPS (DTLS 1.2, PSK auth) on UDP **5684**.
 
 CoAP resources:
 
@@ -33,8 +33,8 @@ USB device_next stack, same OpenOCD flash flow.
 - **CoAP**: `src/coap_server.c` declares the service; the plaintext build uses
   `COAP_SERVICE_DEFINE(..., COAP_SERVICE_AUTOSTART)` (own RX/TX thread, binds UDP
   :5683). The DTLS build (`CONFIG_NET_SOCKETS_ENABLE_DTLS`) uses
-  `COAPS_SERVICE_DEFINE`, registers the X.509 credentials, and starts CoAPS on
-  :5684 from `coap_server_start()` (called by `main()`). Resources are file-scope
+  `COAPS_SERVICE_DEFINE`, registers the PSK, and starts CoAPS on :5684 from
+  `coap_server_start()` (called by `main()`). Resources are file-scope
   `COAP_RESOURCE_DEFINE` blocks, shared by both.
 - **Console** (UART0, 115200 baud): a bare `CONFIG_SHELL` console + logging. No
   `net`/`coap_server` shell commands (the `net` shell alone pulls ~14 KB flash and
@@ -50,16 +50,17 @@ overlay for the CoAPS variant.
 west build -p always -b zbook/rp2350b/m33                              # or: just build
 west flash                                                             # or: just flash
 
-# DTLS/CoAPS variant: DTLS 1.2 + X.509, CoAPS on UDP 5684
+# DTLS/CoAPS variant: DTLS 1.2 + PSK, CoAPS on UDP 5684
 west build -p always -b zbook/rp2350b/m33 -d build-dtls \
       -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF       # or: just build-dtls
 west flash -d build-dtls                                               # or: just flash-dtls
 ```
 
 `dtls.conf` layers mbedTLS 4.x (+ tf-psa-crypto) and turns the CoAP server into a
-cert-authenticated CoAPS server (ECDHE-ECDSA-AES128-GCM-SHA256, self-signed EC
-P-256 in `certs/`). `-DMBEDTLS_FATAL_WARNINGS=OFF` silences `-Werror` warnings in
-upstream tf-psa-crypto code. The DTLS build needs the `mbedtls` + `tf-psa-crypto`
+PSK-authenticated CoAPS server (`TLS_PSK_WITH_AES_128_CCM_8`; dev identity/key in
+`src/coap_server.c` — replace for production). `-DMBEDTLS_FATAL_WARNINGS=OFF`
+silences `-Werror` warnings in upstream tf-psa-crypto code. The DTLS build needs
+the `mbedtls` + `tf-psa-crypto`
 west modules (already in `west.yml`; run `west update` if not fetched).
 
 See [`docs/benchmarks.md`](docs/benchmarks.md) for measured memory (per-layer

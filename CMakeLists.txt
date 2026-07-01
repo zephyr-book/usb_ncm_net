@@ -18,16 +18,6 @@ zephyr_iterable_section(
   NAME coap_resource_coap_server
   GROUP DATA_REGION ${XIP_ALIGN_WITH_INPUT})
 
-# DTLS/CoAPS variant (dtls.conf): convert the DER server cert + key into C
-# arrays that src/coap_server.c #includes. Only needed when DTLS is enabled.
-if(CONFIG_NET_SOCKETS_ENABLE_DTLS)
-  set(gen_inc_dir ${ZEPHYR_BINARY_DIR}/include/generated)
-  generate_inc_file_for_target(app ${CMAKE_CURRENT_SOURCE_DIR}/certs/coaps-server-cert.der
-                               ${gen_inc_dir}/coaps-server-cert.der.inc)
-  generate_inc_file_for_target(app ${CMAKE_CURRENT_SOURCE_DIR}/certs/coaps-server-key.der
-                               ${gen_inc_dir}/coaps-server-key.der.inc)
-endif()
-
 # The RP2350 Pico-SDK RNG state lives in an ".uninitialized_data.*" section.
 # Zephyr's template places a ".uninitialized_data (NOLOAD)" section in the middle
 # of the RAM data region, before usbd_context; once the RNG fills it, that NOLOAD
