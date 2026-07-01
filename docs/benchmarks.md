@@ -123,18 +123,18 @@ Comparing only the layers that differ (shared USB core excluded; shell/logging
 excluded as optional and not intrinsic to either transport). Uses the **minimal**
 `usb_ncm_net` numbers.
 
-| | NCM+CoAP-only | ACM+UART-only | Δ (NCM+CoAP − ACM) |
+| | ACM+UART-only | NCM+CoAP-only | Δ (NCM+CoAP − ACM) |
 |---|--:|--:|--:|
-| CDC function class (ROM) | 3,577 | 2,908 | +669 |
-| net/ip + L2 (ROM) | 19,324 | 0 | +19,324 |
-| CoAP (ROM) | 4,610 | 0 | +4,610 |
-| UART driver + ring lib (ROM) | 0 | 2,154 | −2,154 |
-| **ΔROM** | **27,511** | **5,062** | **+22,449 (~22 KB)** |
-| CDC function class (RAM) | 4,374 | 2,078 | +2,296 |
-| net/ip + L2 (RAM) | 9,697 | 0 | +9,697 |
-| CoAP (RAM) | 2,486 | 0 | +2,486 |
-| UART + bridge ring buffers (RAM) | 0 | 4,100 | −4,100 |
-| **ΔRAM** | **16,557** | **6,178** | **+10,379 (~10 KB)** |
+| CDC function class (ROM) | 2,908 | 3,577 | +669 |
+| net/ip + L2 (ROM) | 0 | 19,324 | +19,324 |
+| CoAP (ROM) | 0 | 4,610 | +4,610 |
+| UART driver + ring lib (ROM) | 2,154 | 0 | −2,154 |
+| **ΔROM** | **5,062** | **27,511** | **+22,449 (~22 KB)** |
+| CDC function class (RAM) | 2,078 | 4,374 | +2,296 |
+| net/ip + L2 (RAM) | 0 | 9,697 | +9,697 |
+| CoAP (RAM) | 0 | 2,486 | +2,486 |
+| UART + bridge ring buffers (RAM) | 4,100 | 0 | −4,100 |
+| **ΔRAM** | **6,178** | **16,557** | **+10,379 (~10 KB)** |
 
 **As a fraction of the RP2350B:** +22 KB flash ≈ 1.1 % of 2 MB; +10 KB RAM ≈
 2.0 % of 520 KB.
