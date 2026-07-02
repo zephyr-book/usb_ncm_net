@@ -7,6 +7,12 @@ manifest:
                 - name: edgebr
                   url-base: https://github.com/edgebr
 
+                # EDHOC (RFC 9528) engine -- replaces uoscore-uedhoc's buggy
+                # EDHOC half (see docs/edhoc-oscore-plan.md). uoscore-uedhoc is
+                # kept for OSCORE only.
+                - name: kamil-kielbasa
+                  url-base: https://github.com/kamil-kielbasa
+
         projects:
                 - name: zephyr
                   remote: zephyrproject
@@ -24,6 +30,19 @@ manifest:
                                   - littlefs
                                   - mbedtls
                                   - tf-psa-crypto
+                                  # EDHOC (RFC 9528) + OSCORE (RFC 8613) library
+                                  # and its CBOR backend dependency.
+                                  - uoscore-uedhoc
+                                  - zcbor
+
+                # libedhoc -- EDHOC (RFC 9528) responder engine, pure C, native
+                # Zephyr module (ships zephyr/module.yml -> auto-discovered),
+                # mbedTLS/PSA backend. Verified byte-exact against RFC 9529 ch.3
+                # (our exact method-3/CCS/kid profile). Pinned to a release tag.
+                - name: libedhoc
+                  remote: kamil-kielbasa
+                  revision: v1.14.1
+                  path: deps/modules/lib/libedhoc
 
                 # Board support shipped as a Zephyr module (provides boards/ via module.yml).
                 - name: zbook

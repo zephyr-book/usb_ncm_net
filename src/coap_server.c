@@ -40,47 +40,34 @@ static uint16_t coap_port = 5684;
 static uint16_t coap_port = 5683;
 #endif
 
-static int hello_get(struct coap_resource *resource, struct coap_packet *request,
-		     struct net_sockaddr *addr, net_socklen_t addr_len)
+/*
+ * Response builders. Each fills @p response (backed by @p buf) for one resource
+ * without transmitting it, so the same logic serves both the plaintext
+ * COAP_SERVICE handlers below and the OSCORE intercept (src/edhoc_oscore.c),
+ * which encrypts the built response before sending.
+ */
+
+static int build_hello(struct coap_packet *response, uint8_t *buf, uint16_t buf_len,
+			uint8_t tkl, const uint8_t *token, uint16_t id)
 {
 	static const char payload[] = "Hello from ZBook over USB-NCM\n";
-	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
-	struct coap_packet response;
-	uint8_t token[COAP_TOKEN_MAX_LEN];
-	uint16_t id;
-	uint8_t tkl;
 	int r;
-
-	id = coap_header_get_id(request);
-	tkl = coap_header_get_token(request, token);
 
 	LOG_INF("GET /hello");
 
-	r = coap_packet_init(&response, data, sizeof(data), COAP_VERSION_1, COAP_TYPE_ACK, tkl,
-			     token, COAP_RESPONSE_CODE_CONTENT, id);
+	r = coap_packet_init(response, buf, buf_len, COAP_VERSION_1, COAP_TYPE_ACK, tkl, token,
+			     COAP_RESPONSE_CODE_CONTENT, id);
 	if (r < 0) {
 		return r;
 	}
 
-	r = coap_packet_append_payload_marker(&response);
+	r = coap_packet_append_payload_marker(response);
 	if (r < 0) {
 		return r;
 	}
 
-	r = coap_packet_append_payload(&response, (const uint8_t *)payload, strlen(payload));
-	if (r < 0) {
-		return r;
-	}
-
-	return coap_resource_send(resource, &response, addr, addr_len, NULL);
+	return coap_packet_append_payload(response, (const uint8_t *)payload, strlen(payload));
 }
-
-static const char *const hello_path[] = {"hello", NULL};
-
-COAP_RESOURCE_DEFINE(hello, coap_server, {
-	.get = hello_get,
-	.path = hello_path,
-});
 
 /* Board LED behind the "led" resource (led0 alias = blue LED, active-low). */
 static const struct gpio_dt_spec led_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
@@ -116,57 +103,35 @@ static int parse_onoff(const uint8_t *payload, uint16_t len)
 	return -1;
 }
 
-static int led_get(struct coap_resource *resource, struct coap_packet *request,
-		   struct net_sockaddr *addr, net_socklen_t addr_len)
+static int build_led_get(struct coap_packet *response, uint8_t *buf, uint16_t buf_len,
+			 uint8_t tkl, const uint8_t *token, uint16_t id)
 {
-	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
-	struct coap_packet response;
-	uint8_t token[COAP_TOKEN_MAX_LEN];
 	const uint8_t value = led_state ? '1' : '0';
-	uint16_t id;
-	uint8_t tkl;
 	int r;
-
-	id = coap_header_get_id(request);
-	tkl = coap_header_get_token(request, token);
 
 	LOG_INF("GET /led -> %c", value);
 
-	r = coap_packet_init(&response, data, sizeof(data), COAP_VERSION_1, COAP_TYPE_ACK, tkl,
-			     token, COAP_RESPONSE_CODE_CONTENT, id);
+	r = coap_packet_init(response, buf, buf_len, COAP_VERSION_1, COAP_TYPE_ACK, tkl, token,
+			     COAP_RESPONSE_CODE_CONTENT, id);
 	if (r < 0) {
 		return r;
 	}
 
-	r = coap_packet_append_payload_marker(&response);
+	r = coap_packet_append_payload_marker(response);
 	if (r < 0) {
 		return r;
 	}
 
-	r = coap_packet_append_payload(&response, &value, sizeof(value));
-	if (r < 0) {
-		return r;
-	}
-
-	return coap_resource_send(resource, &response, addr, addr_len, NULL);
+	return coap_packet_append_payload(response, &value, sizeof(value));
 }
 
-static int led_put(struct coap_resource *resource, struct coap_packet *request,
-		   struct net_sockaddr *addr, net_socklen_t addr_len)
+static int build_led_put(struct coap_packet *request, struct coap_packet *response, uint8_t *buf,
+			 uint16_t buf_len, uint8_t tkl, const uint8_t *token, uint16_t id)
 {
-	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
-	struct coap_packet response;
-	uint8_t token[COAP_TOKEN_MAX_LEN];
 	const uint8_t *payload;
 	uint16_t payload_len;
 	uint8_t code;
-	uint16_t id;
-	uint8_t tkl;
 	int value;
-	int r;
-
-	id = coap_header_get_id(request);
-	tkl = coap_header_get_token(request, token);
 
 	payload = coap_packet_get_payload(request, &payload_len);
 	value = (payload != NULL) ? parse_onoff(payload, payload_len) : -1;
@@ -181,8 +146,57 @@ static int led_put(struct coap_resource *resource, struct coap_packet *request,
 		code = COAP_RESPONSE_CODE_CHANGED;
 	}
 
-	r = coap_packet_init(&response, data, sizeof(data), COAP_VERSION_1, COAP_TYPE_ACK, tkl,
-			     token, code, id);
+	return coap_packet_init(response, buf, buf_len, COAP_VERSION_1, COAP_TYPE_ACK, tkl, token,
+				code, id);
+}
+
+static const char *const hello_path[] = {"hello", NULL};
+static const char *const led_path[] = {"led", NULL};
+
+int coap_server_dispatch_inner(struct coap_packet *request, uint8_t *buf, uint16_t buf_len,
+			       struct coap_packet *response)
+{
+	struct coap_option options[2];
+	uint8_t token[COAP_TOKEN_MAX_LEN];
+	uint16_t id = coap_header_get_id(request);
+	uint8_t tkl = coap_header_get_token(request, token);
+	uint8_t code = coap_header_get_code(request);
+	int opt_num = coap_find_options(request, COAP_OPTION_URI_PATH, options, ARRAY_SIZE(options));
+
+	if (opt_num < 0) {
+		opt_num = 0;
+	}
+
+	if (code == COAP_METHOD_GET && coap_uri_path_match(hello_path, options, opt_num)) {
+		return build_hello(response, buf, buf_len, tkl, token, id);
+	}
+
+	if (coap_uri_path_match(led_path, options, opt_num)) {
+		if (code == COAP_METHOD_GET) {
+			return build_led_get(response, buf, buf_len, tkl, token, id);
+		}
+		if (code == COAP_METHOD_PUT) {
+			return build_led_put(request, response, buf, buf_len, tkl, token, id);
+		}
+	}
+
+	LOG_WRN("unhandled request (code %u)", code);
+	return coap_packet_init(response, buf, buf_len, COAP_VERSION_1, COAP_TYPE_ACK, tkl, token,
+				COAP_RESPONSE_CODE_NOT_FOUND, id);
+}
+
+/*
+ * Thin COAP_SERVICE handler used by the plaintext hello/led resources: dispatch
+ * to the shared builder, then transmit. (In the OSCORE build these resources
+ * stay reachable in the clear during bring-up.)
+ */
+static int app_request(struct coap_resource *resource, struct coap_packet *request,
+		       struct net_sockaddr *addr, net_socklen_t addr_len)
+{
+	uint8_t data[CONFIG_COAP_SERVER_MESSAGE_SIZE];
+	struct coap_packet response;
+	int r = coap_server_dispatch_inner(request, data, sizeof(data), &response);
+
 	if (r < 0) {
 		return r;
 	}
@@ -190,11 +204,14 @@ static int led_put(struct coap_resource *resource, struct coap_packet *request,
 	return coap_resource_send(resource, &response, addr, addr_len, NULL);
 }
 
-static const char *const led_path[] = {"led", NULL};
+COAP_RESOURCE_DEFINE(hello, coap_server, {
+	.get = app_request,
+	.path = hello_path,
+});
 
 COAP_RESOURCE_DEFINE(led, coap_server, {
-	.get = led_get,
-	.put = led_put,
+	.get = app_request,
+	.put = app_request,
 	.path = led_path,
 });
 

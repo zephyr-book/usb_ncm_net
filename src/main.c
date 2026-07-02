@@ -21,6 +21,9 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/usb/usbd.h>
+#if defined(CONFIG_LIBEDHOC_ENABLE)
+#include <psa/crypto.h>
+#endif
 
 LOG_MODULE_REGISTER(usb_ncm_net, LOG_LEVEL_INF);
 
@@ -93,6 +96,23 @@ int main(void)
 	}
 
 	(void)assign_static_ipv4();
+
+#if defined(CONFIG_LIBEDHOC_ENABLE)
+	/* libedhoc (EDHOC) and uoscore (OSCORE) drive mbedTLS through the PSA
+	 * API, which must be initialised explicitly (the DTLS variant relies on
+	 * Zephyr's automatic init instead). Safe to call once here before any
+	 * crypto runs.
+	 */
+	{
+		psa_status_t st = psa_crypto_init();
+
+		if (st != PSA_SUCCESS) {
+			LOG_ERR("psa_crypto_init failed (%d)", (int)st);
+		} else {
+			LOG_INF("PSA crypto initialised");
+		}
+	}
+#endif
 
 	/* Plaintext CoAP autostarts; the DTLS variant registers X.509 creds and
 	 * starts CoAPS here (after the interface exists).

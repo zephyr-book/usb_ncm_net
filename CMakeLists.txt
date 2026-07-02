@@ -18,6 +18,42 @@ zephyr_iterable_section(
   NAME coap_resource_coap_server
   GROUP DATA_REGION ${XIP_ALIGN_WITH_INPUT})
 
+# EDHOC engine = libedhoc (oscore build only, CONFIG_LIBEDHOC_ENABLE). The
+# Zephyr module compiles libedhoc's core + CBOR backend, but the cipher-suite-2
+# crypto helper is meant to be compiled by the application (it is not part of the
+# module library), so add it here. Both libedhoc (include/) and uoscore-uedhoc
+# (inc/) ship a flat edhoc.h on the global include path; prepend libedhoc's dirs
+# for the app target so `#include <edhoc.h>` in src/edhoc_oscore.c resolves to
+# libedhoc's API rather than uoscore's (which is still linked, for OSCORE only).
+if(CONFIG_LIBEDHOC_ENABLE)
+  # libedhoc's cipher-suite-2 crypto helper is meant to be app-compiled (it is
+  # not part of the Zephyr module library). We compile a vendored+patched copy
+  # from vendor/ instead of the module's, because upstream's key agreement uses
+  # mbedtls_pk_ec() -- removed in this mbedTLS (tf-psa-crypto 4.x). The legacy
+  # ECP API it still needs is exposed via CONFIG_MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
+  # (oscore.conf). See vendor/edhoc_cipher_suite_2.c.
+  target_sources(app PRIVATE ${CMAKE_SOURCE_DIR}/vendor/edhoc_cipher_suite_2.c)
+  # Prepend libedhoc's public + helper headers so <edhoc.h> in src/edhoc_oscore.c
+  # resolves to libedhoc, not uoscore-uedhoc's inc/edhoc.h (still linked for OSCORE).
+  target_include_directories(app BEFORE PRIVATE
+    ${ZEPHYR_LIBEDHOC_MODULE_DIR}/include
+    ${ZEPHYR_LIBEDHOC_MODULE_DIR}/helpers/include)
+  # PSA_KEY_HANDLE_INIT was removed from this PSA; the helper still uses it as a
+  # null key-id initialiser. Map it to the current spelling.
+  target_compile_definitions(app PRIVATE PSA_KEY_HANDLE_INIT=PSA_KEY_ID_NULL)
+
+  # Same flat-edhoc.h clash, other direction: uoscore-uedhoc's own sources
+  # #include "edhoc.h" expecting *its* inc/edhoc.h (which defines WEAK etc.), but
+  # libedhoc's include/edhoc.h is also on the global include path. Prepend
+  # uoscore's inc/ to its module libraries so they resolve to uoscore's header.
+  foreach(uoscore_tgt uoscore_uedhoc_common uoscore)
+    if(TARGET ${uoscore_tgt})
+      target_include_directories(${uoscore_tgt} BEFORE PRIVATE
+        ${ZEPHYR_UOSCORE_UEDHOC_MODULE_DIR}/inc)
+    endif()
+  endforeach()
+endif()
+
 # The RP2350 Pico-SDK RNG state lives in an ".uninitialized_data.*" section.
 # Zephyr's template places a ".uninitialized_data (NOLOAD)" section in the middle
 # of the RAM data region, before usbd_context; once the RNG fills it, that NOLOAD
