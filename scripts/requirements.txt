@@ -1,0 +1,14 @@
+# Host-side EDHOC Initiator + OSCORE client for the usb_ncm_net oscore build.
+# Python 3.12. Create the venv and install:
+#   python3 -m venv scripts/.venv && scripts/.venv/bin/pip install -r scripts/requirements.txt
+#   (or: just venv)
+#
+# aiocoap ships a built-in EDHOC (RFC 9528) initiator + OSCORE (RFC 8613) client
+# driven by lakers; lakers-python implements EDHOC suite 2 / method 3 (STAT-STAT),
+# exactly what the device responder uses. cbor2 + cryptography back edhoc_keys.py.
+aiocoap[oscore] >= 0.4.12
+lakers-python >= 0.4
+cbor2 >= 5.6
+cryptography >= 42.0
+# For scripts/coap_cli.py --dtls and scripts/coap_latency.py --dtls (DTLS-PSK).
+python-mbedtls >= 2.0

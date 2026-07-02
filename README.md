@@ -5,10 +5,14 @@ that exposes the board to a host computer as a **USB CDC-NCM** virtual Ethernet
 adapter and runs a **CoAP server** over that link. Tested against a macOS-ARM host.
 
 The board takes the static IPv4 address **`192.0.2.1`**; the host configures its end
-of the link (**`192.0.2.2`**) manually. Two builds:
+of the link (**`192.0.2.2`**) manually. Three builds:
 
 - **base** (`just build`) — plaintext CoAP on UDP **5683**.
 - **DTLS** (`just build-dtls`) — CoAPS (DTLS 1.2, PSK auth) on UDP **5684**.
+- **OSCORE** (`just build-oscore`) — plaintext CoAP on UDP **5683** protected at
+  the application layer by **OSCORE** (RFC 8613), keyed by **EDHOC** (RFC 9528,
+  method 3 / suite 2). See [EDHOC + OSCORE](#running-the-edhoc--oscore-variant)
+  and the design record [`docs/edhoc-oscore-plan.md`](docs/edhoc-oscore-plan.md).
 
 CoAP resources:
 
@@ -54,6 +58,12 @@ west flash                                                             # or: jus
 west build -p always -b zbook/rp2350b/m33 -d build-dtls \
       -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF       # or: just build-dtls
 west flash -d build-dtls                                               # or: just flash-dtls
+
+# EDHOC + OSCORE variant: application-layer security over plaintext UDP 5683
+just keys                                                              # generate creds first
+west build -p always -b zbook/rp2350b/m33 -d build-oscore \
+      -- -DEXTRA_CONF_FILE=oscore.conf                                 # or: just build-oscore
+west flash -d build-oscore                                             # or: just flash-oscore
 ```
 
 `dtls.conf` layers mbedTLS 4.x (+ tf-psa-crypto) and turns the CoAP server into a
@@ -143,6 +153,44 @@ dev PSK is hardcoded in `src/coap_server.c` — replace it before shipping:
 
 On the board console you can verify the link with `net iface` (shows the NCM
 interface UP at 192.0.2.1) and `coap_server` (lists the running service).
+
+### Running the EDHOC + OSCORE variant
+
+The `oscore.conf` build secures the same `hello`/`led` resources at the
+**application layer** instead of with DTLS: **EDHOC** (RFC 9528) establishes a
+shared secret, then **OSCORE** (RFC 8613) protects each CoAP message — over plain
+CoAP/UDP :5683 (no DTLS in the path). Fixed to method **3** (static-DH both
+sides), cipher suite **2** (P-256 / SHA-256 / AES-CCM-16-64-128), and
+raw-public-key **CCS** credentials referenced by `kid`. The device is the
+Responder; the host is the Initiator (aiocoap + lakers). Full design + hard-won
+integration notes: [`docs/edhoc-oscore-plan.md`](docs/edhoc-oscore-plan.md).
+
+Implementation: `src/edhoc_oscore.c` (uoscore-uedhoc, mbedTLS/PSA backend). A
+`/.well-known/edhoc` resource shuttles the three handshake messages (RFC 9668
+binding) to a dedicated responder thread; on completion it derives the OSCORE
+context. A root-path resource intercepts OSCORE-protected requests, decrypts,
+dispatches to the shared `hello`/`led` handler, and re-encrypts the reply. A
+fresh EDHOC run each boot re-keys OSCORE (SSN starts at 0, no NVM).
+
+```bash
+just venv                 # one-time: host venv (aiocoap, lakers, cbor2, cryptography, python-mbedtls)
+just keys                 # one-time: generate include/edhoc_creds.h + scripts/edhoc_creds.json
+just build-oscore && just flash-oscore
+#  → 5 s USB power-cycle, then: sudo ifconfig en<N> 192.0.2.2 255.255.255.0 up
+just edhoc-client         # EDHOC handshake + OSCORE-protected GET/PUT round-trip
+```
+
+Expected: `2.05 Content` with decrypted `hello`/`led` payloads and the LED
+toggling, no AEAD errors. The board console logs `EDHOC handshake complete` then
+`OSCORE context ready`. `scripts/edhoc_keys.py` is the single source of truth —
+the C header and host JSON are generated together, so they match byte-for-byte
+(the credential bytes feed the EDHOC transcript hash).
+
+> **Status: prototype.** Builds and links, and host↔device credentials are
+> validated offline; the live handshake was not yet confirmed on hardware. If the
+> handshake completes (`2.04` on messages 2/3) but protected requests fail to
+> decrypt, it's most likely the connection-ID ↔ OSCORE-ID encoding — see the
+> plan's risk list.
 
 ### Troubleshooting: `Broken pipe` / ARP `(incomplete)`
 

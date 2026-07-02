@@ -62,3 +62,8 @@ build*/
 __pycache__/
 *.pyc
 .venv/
+
+# EDHOC/OSCORE generated key material (contains private keys; regenerate with
+# scripts/edhoc_keys.py -- see docs/edhoc-oscore-plan.md).
+scripts/edhoc_creds.json
+include/edhoc_creds.h
