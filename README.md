@@ -11,7 +11,7 @@ of the link (**`192.0.2.2`**) manually. Three builds:
 - **DTLS** (`just build-dtls`) — CoAPS (DTLS 1.2, PSK auth) on UDP **5684**.
 - **OSCORE** (`just build-oscore`) — plaintext CoAP on UDP **5683** protected at
   the application layer by **OSCORE** (RFC 8613), keyed by **EDHOC** (RFC 9528,
-  method 3 / suite 2). See [EDHOC + OSCORE](#running-the-edhoc--oscore-variant)
+  method 3 / suite 0, X25519). See [EDHOC + OSCORE](#running-the-edhoc--oscore-variant)
   and the design record [`docs/edhoc-oscore-plan.md`](docs/edhoc-oscore-plan.md).
 
 CoAP resources:
@@ -160,37 +160,45 @@ The `oscore.conf` build secures the same `hello`/`led` resources at the
 **application layer** instead of with DTLS: **EDHOC** (RFC 9528) establishes a
 shared secret, then **OSCORE** (RFC 8613) protects each CoAP message — over plain
 CoAP/UDP :5683 (no DTLS in the path). Fixed to method **3** (static-DH both
-sides), cipher suite **2** (P-256 / SHA-256 / AES-CCM-16-64-128), and
+sides), cipher suite **0** (X25519 / SHA-256 / AES-CCM-16-64-128), and
 raw-public-key **CCS** credentials referenced by `kid`. The device is the
-Responder; the host is the Initiator (aiocoap + lakers). Full design + hard-won
-integration notes: [`docs/edhoc-oscore-plan.md`](docs/edhoc-oscore-plan.md).
+Responder; the peer is a native **C/C++ host client** (`host_client/`) built from
+the same libraries the device runs. Full design + hard-won integration notes:
+[`docs/edhoc-oscore-plan.md`](docs/edhoc-oscore-plan.md).
 
-Implementation: `src/edhoc_oscore.c` (uoscore-uedhoc, mbedTLS/PSA backend). A
-`/.well-known/edhoc` resource shuttles the three handshake messages (RFC 9668
-binding) to a dedicated responder thread; on completion it derives the OSCORE
+**Split-engine design:** the EDHOC engine is **`libedhoc`**; OSCORE is the
+**`uoscore-uedhoc` OSCORE half** only (its EDHOC half is disabled — two unfixed
+RFC-9528 encoding bugs broke CCS-by-kid interop, which is why libedhoc replaced
+it). Suite-0 X25519 uses **compact25519** — X-coordinate-only ECDH, so no mbedTLS
+ECP / point decompression; AES-CCM / SHA-256 / HKDF run through mbedTLS **PSA**.
+
+Implementation: `src/edhoc_oscore.c` (guarded by `CONFIG_LIBEDHOC_ENABLE`). A
+`/.well-known/edhoc` resource carries the handshake messages (RFC 9668 binding);
+`edhoc_post()` drives libedhoc's synchronous, per-message responder API directly
+(no dedicated thread), composes a `message_4` reply, then derives the OSCORE
 context. A root-path resource intercepts OSCORE-protected requests, decrypts,
 dispatches to the shared `hello`/`led` handler, and re-encrypts the reply. A
 fresh EDHOC run each boot re-keys OSCORE (SSN starts at 0, no NVM).
 
 ```bash
-just venv                 # one-time: host venv (aiocoap, lakers, cbor2, cryptography, python-mbedtls)
-just keys                 # one-time: generate include/edhoc_creds.h + scripts/edhoc_creds.json
+brew install mbedtls@3    # one-time: host-side PSA crypto for the native client
+just keys                 # one-time: generate device + host credential headers (+ JSON)
 just build-oscore && just flash-oscore
 #  → 5 s USB power-cycle, then: sudo ifconfig en<N> 192.0.2.2 255.255.255.0 up
-just edhoc-client         # EDHOC handshake + OSCORE-protected GET/PUT round-trip
+just edhoc-client         # builds the host client, runs EDHOC + OSCORE round-trip
 ```
 
 Expected: `2.05 Content` with decrypted `hello`/`led` payloads and the LED
 toggling, no AEAD errors. The board console logs `EDHOC handshake complete` then
 `OSCORE context ready`. `scripts/edhoc_keys.py` is the single source of truth —
-the C header and host JSON are generated together, so they match byte-for-byte
+`include/edhoc_creds.h` (device), `host_client/edhoc_creds_client.h` (host), and
+`scripts/edhoc_creds.json` are generated together, so they match byte-for-byte
 (the credential bytes feed the EDHOC transcript hash).
 
-> **Status: prototype.** Builds and links, and host↔device credentials are
-> validated offline; the live handshake was not yet confirmed on hardware. If the
-> handshake completes (`2.04` on messages 2/3) but protected requests fail to
-> decrypt, it's most likely the connection-ID ↔ OSCORE-ID encoding — see the
-> plan's risk list.
+> **Status: verified on hardware.** The full handshake plus an OSCORE-protected
+> `hello`/`led` round-trip complete end-to-end (the LED toggles), interoperating
+> via the native host client. The earlier suite-2/P-256 path (software P-256 +
+> point decompression, ~4 s per message) was retired in favour of suite 0.
 
 ### Troubleshooting: `Broken pipe` / ARP `(incomplete)`
 
