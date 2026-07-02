@@ -51,11 +51,13 @@
 #include "coap_server.h"
 #include "edhoc_creds.h"
 
-/* libedhoc EDHOC engine + the ready-made cipher-suite-2 crypto/keys helper
- * (AES-CCM-16-64-128 / SHA-256 / P-256 over mbedTLS-PSA). We write zero crypto.
+/* libedhoc EDHOC engine + the ready-made cipher-suite-0 crypto/keys helper
+ * (AES-CCM-16-64-128 / SHA-256 over PSA; X25519 via compact25519). We write zero
+ * crypto. X25519 ECDH is X-coordinate-only, so there is no point decompression
+ * and no dependency on mbedTLS's (legacy) ECP -- unlike suite 2 / P-256.
  */
 #include "edhoc.h"
-#include "edhoc_cipher_suite_2.h"
+#include "edhoc_cipher_suite_0.h"
 
 /* uoscore-uedhoc, OSCORE half only: byte_array, oscore_context_init(), and the
  * oscore2coap()/coap2oscore() pipeline. Its EDHOC half is not built.
@@ -112,7 +114,7 @@ static int cred_fetch(void *user_ctx, struct edhoc_auth_creds *creds)
 	creds->key_id.key_id_bstr[0] = ED_KID_R;
 	creds->key_id.key_id_bstr_length = 1;
 
-	if (edhoc_cipher_suite_2_key_import(NULL, EDHOC_KT_KEY_AGREEMENT, ED_R_PRIV,
+	if (edhoc_cipher_suite_0_key_import(NULL, EDHOC_KT_KEY_AGREEMENT, ED_R_PRIV,
 					    sizeof(ED_R_PRIV), creds->priv_key_id) != EDHOC_SUCCESS) {
 		LOG_ERR("responder static-DH private key import failed");
 		return EDHOC_ERROR_CREDENTIALS_FAILURE;
@@ -123,7 +125,7 @@ static int cred_fetch(void *user_ctx, struct edhoc_auth_creds *creds)
 
 /*
  * Verify the peer Initiator's credential by kid and hand libedhoc the peer's
- * static-DH public key (G_I, the 32-byte X-coordinate).
+ * static-DH public key (G_I, the 32-byte X25519 u-coordinate).
  */
 static int cred_verify(void *user_ctx, struct edhoc_auth_creds *creds,
 		       const uint8_t **public_key_reference, size_t *public_key_length)
@@ -195,8 +197,8 @@ static int edhoc_setup(struct edhoc_context *ctx)
 		return ret;
 	}
 
-	/* Single supported suite (2); use the helper's canonical descriptor. */
-	ret = edhoc_set_cipher_suites(ctx, edhoc_cipher_suite_2_get_suite(), 1);
+	/* Single supported suite (0); use the helper's canonical descriptor. */
+	ret = edhoc_set_cipher_suites(ctx, edhoc_cipher_suite_0_get_suite(), 1);
 	if (ret != EDHOC_SUCCESS) {
 		return ret;
 	}
@@ -206,12 +208,12 @@ static int edhoc_setup(struct edhoc_context *ctx)
 		return ret;
 	}
 
-	ret = edhoc_bind_keys(ctx, edhoc_cipher_suite_2_get_keys());
+	ret = edhoc_bind_keys(ctx, edhoc_cipher_suite_0_get_keys());
 	if (ret != EDHOC_SUCCESS) {
 		return ret;
 	}
 
-	ret = edhoc_bind_crypto(ctx, edhoc_cipher_suite_2_get_crypto());
+	ret = edhoc_bind_crypto(ctx, edhoc_cipher_suite_0_get_crypto());
 	if (ret != EDHOC_SUCCESS) {
 		return ret;
 	}

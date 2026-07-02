@@ -19,27 +19,29 @@ zephyr_iterable_section(
   GROUP DATA_REGION ${XIP_ALIGN_WITH_INPUT})
 
 # EDHOC engine = libedhoc (oscore build only, CONFIG_LIBEDHOC_ENABLE). The
-# Zephyr module compiles libedhoc's core + CBOR backend, but the cipher-suite-2
+# Zephyr module compiles libedhoc's core + CBOR backend, but the cipher-suite
 # crypto helper is meant to be compiled by the application (it is not part of the
-# module library), so add it here. Both libedhoc (include/) and uoscore-uedhoc
-# (inc/) ship a flat edhoc.h on the global include path; prepend libedhoc's dirs
-# for the app target so `#include <edhoc.h>` in src/edhoc_oscore.c resolves to
-# libedhoc's API rather than uoscore's (which is still linked, for OSCORE only).
+# module library). We use cipher suite 0 (X25519): its helper does ECDH via the
+# compact25519 library (no mbedTLS ECP, no point decompression) and AES-CCM /
+# SHA-256 / HKDF via PSA.
 if(CONFIG_LIBEDHOC_ENABLE)
-  # libedhoc's cipher-suite-2 crypto helper is meant to be app-compiled (it is
-  # not part of the Zephyr module library). We compile a vendored+patched copy
-  # from vendor/ instead of the module's, because upstream's key agreement uses
-  # mbedtls_pk_ec() -- removed in this mbedTLS (tf-psa-crypto 4.x). The legacy
-  # ECP API it still needs is exposed via CONFIG_MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
-  # (oscore.conf). See vendor/edhoc_cipher_suite_2.c.
-  target_sources(app PRIVATE ${CMAKE_SOURCE_DIR}/vendor/edhoc_cipher_suite_2.c)
-  # Prepend libedhoc's public + helper headers so <edhoc.h> in src/edhoc_oscore.c
-  # resolves to libedhoc, not uoscore-uedhoc's inc/edhoc.h (still linked for OSCORE).
+  set(COMPACT25519_DIR ${ZEPHYR_LIBEDHOC_MODULE_DIR}/../compact25519)
+  file(GLOB COMPACT25519_SRC
+    ${COMPACT25519_DIR}/src/*.c
+    ${COMPACT25519_DIR}/src/c25519/*.c)
+  target_sources(app PRIVATE
+    ${ZEPHYR_LIBEDHOC_MODULE_DIR}/helpers/src/edhoc_cipher_suite_0.c
+    ${COMPACT25519_SRC})
+  # Prepend libedhoc's public + helper headers (so <edhoc.h> in src/edhoc_oscore.c
+  # resolves to libedhoc, not uoscore-uedhoc's inc/edhoc.h, which is also on the
+  # global path and is still linked for OSCORE) and compact25519's src/ (so the
+  # suite-0 helper finds <compact_x25519.h> / <c25519/c25519.h>).
   target_include_directories(app BEFORE PRIVATE
     ${ZEPHYR_LIBEDHOC_MODULE_DIR}/include
-    ${ZEPHYR_LIBEDHOC_MODULE_DIR}/helpers/include)
-  # PSA_KEY_HANDLE_INIT was removed from this PSA; the helper still uses it as a
-  # null key-id initialiser. Map it to the current spelling.
+    ${ZEPHYR_LIBEDHOC_MODULE_DIR}/helpers/include
+    ${COMPACT25519_DIR}/src)
+  # PSA_KEY_HANDLE_INIT was removed from this PSA; the suite-0 helper still uses
+  # it as a null key-id initialiser. Map it to the current spelling.
   target_compile_definitions(app PRIVATE PSA_KEY_HANDLE_INIT=PSA_KEY_ID_NULL)
 
   # Same flat-edhoc.h clash, other direction: uoscore-uedhoc's own sources
