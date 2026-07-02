@@ -67,3 +67,4 @@ __pycache__/
 # scripts/edhoc_keys.py -- see docs/edhoc-oscore-plan.md).
 scripts/edhoc_creds.json
 include/edhoc_creds.h
+host_client/edhoc_creds_client.h

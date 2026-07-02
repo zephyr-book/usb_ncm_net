@@ -75,15 +75,22 @@ venv:
     scripts/.venv/bin/pip install -q -r scripts/requirements.txt
 
 # One-time (or to rotate keys): generate the shared EDHOC credentials. Writes
-# include/edhoc_creds.h (device) + scripts/edhoc_creds.json (host). Rebuild +
-# reflash the oscore variant after running this so the firmware embeds the keys.
+# include/edhoc_creds.h (device) + host_client/edhoc_creds_client.h (host) +
+# scripts/edhoc_creds.json. Rebuild + reflash the oscore variant AND rebuild the
+# host client (just build-host-client) after running this so both embed the keys.
 keys:
     scripts/.venv/bin/python scripts/edhoc_keys.py
 
-# Run the host EDHOC handshake + OSCORE-protected round-trip (board must be
-# flashed with build-oscore and the USB-NCM link up; see docs/edhoc-oscore-plan.md).
-edhoc-client host="192.0.2.1":
-    scripts/.venv/bin/python scripts/edhoc_oscore_client.py --host {{ host }}
+# Build the native host EDHOC (libedhoc, suite 0 / X25519) + OSCORE (uoscore)
+# client. Needs Homebrew mbedtls@3 (brew install mbedtls@3) and `just keys` first.
+build-host-client:
+    cmake -S host_client -B host_client/build
+    cmake --build host_client/build
+
+# Run the host EDHOC handshake + OSCORE-protected round-trip against the device
+# (flashed with build-oscore, USB-NCM link up; see docs/edhoc-oscore-plan.md).
+edhoc-client host="192.0.2.1": build-host-client
+    host_client/build/edhoc_oscore_client {{ host }}
 
 erase:
     {{ openocd_bin }} -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "init; reset halt; flash erase_sector 0 0 last; shutdown"

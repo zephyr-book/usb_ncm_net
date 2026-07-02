@@ -1,14 +1,26 @@
 # EDHOC (RFC 9528) + OSCORE (RFC 8613) on `usb_ncm_net` — design record
 
-> **Status (2026-07): EDHOC engine migrated off `uoscore-uedhoc` to
-> [`libedhoc`](https://github.com/kamil-kielbasa/libedhoc) v1.14.1; OSCORE half
-> kept. DONE and verified on hardware — the full EDHOC handshake + OSCORE-protected
-> `hello`/`led` round-trip interoperate with `aiocoap`/`lakers` (which the old
-> `uoscore-uedhoc` engine could not). All three build variants compile+link
-> (plaintext 8.5% / DTLS 10.7% / oscore 12.7% FLASH). Note: the handshake is
-> *slow* (~4 s per message — software P-256 + point decompression on the RP2350,
-> no ECC accel); a perf pass (hardware/faster ECC, caching the peer-point
-> decompression) is deferred.**
+> **Status (2026-07): EDHOC engine = [`libedhoc`](https://github.com/kamil-kielbasa/libedhoc)
+> v1.14.1; OSCORE half = `uoscore-uedhoc`.**
+> - **Suite 2 / P-256 (first cut):** verified on hardware against `aiocoap`/`lakers`
+>   — full handshake + OSCORE `hello`/`led` round-trip (which the old
+>   `uoscore-uedhoc` engine could not do). But the handshake was **slow (~4 s)**:
+>   software P-256 + point decompression on the RP2350 (no ECC accel), and it
+>   dragged in mbedTLS's legacy ECP (a vendored+patched helper +
+>   `DECLARE_PRIVATE_IDENTIFIERS`).
+> - **Suite 0 / X25519 (current, verified on hardware):** to make the *device*
+>   efficient, switched to cipher suite 0. X25519 ECDH is X-coordinate-only (no
+>   point decompression, no mbedTLS ECP) via libedhoc's suite-0 helper +
+>   `compact25519`, far faster on the RP2350 and drops all the legacy-ECP
+>   machinery. The peer had to change too (aiocoap/lakers are P-256-only): the
+>   host client is now a native **C/C++** client (`host_client/`) built from the
+>   SAME libs (libedhoc + uoscore) so interop is guaranteed. **Verified on
+>   hardware:** fast handshake + OSCORE `hello`/`led` round-trip. Device oscore
+>   12.7% FLASH / 13.8% RAM (below the DTLS variant).
+>   - Gotcha fixed on the way: `CONFIG_COAP_SERVER_MESSAGE_SIZE` defaults to
+>     `COAP_SERVER_BLOCK_SIZE` (64), too small for the `message_1` POST (32-byte
+>     G_X + CoAP framing ~65 B) -> server returned 4.13 before the handler ran.
+>     Bumped to 256 in oscore.conf.
 > The `uoscore-uedhoc` prototype below was re-applied and taken to hardware,
 > where the live handshake against `aiocoap`/`lakers` failed. Root cause: **two
 > unfixed RFC-9528 encoding bugs in `uoscore-uedhoc`** (see the next section) that

@@ -13,6 +13,11 @@ manifest:
                 - name: kamil-kielbasa
                   url-base: https://github.com/kamil-kielbasa
 
+                # X25519/Ed25519 for EDHOC cipher suite 0 (libedhoc's suite_0
+                # helper depends on it). Same pin libedhoc uses.
+                - name: davylandman
+                  url-base: https://github.com/DavyLandman
+
         projects:
                 - name: zephyr
                   remote: zephyrproject
@@ -43,6 +48,14 @@ manifest:
                   remote: kamil-kielbasa
                   revision: v1.14.1
                   path: deps/modules/lib/libedhoc
+
+                # compact25519 -- small portable X25519/Ed25519, used by
+                # libedhoc's cipher-suite-0 helper. Not a Zephyr module: its
+                # sources are compiled by the app (see CMakeLists.txt).
+                - name: compact25519
+                  remote: davylandman
+                  revision: v1.1.0
+                  path: deps/modules/lib/compact25519
 
                 # Board support shipped as a Zephyr module (provides boards/ via module.yml).
                 - name: zbook
