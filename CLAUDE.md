@@ -187,8 +187,10 @@ builds a `coap_packet` and sends via `coap_resource_send()`. Route it through
 
 - **`docs/edhoc-oscore-plan.md`** — design record; **authoritative** for the EDHOC
   work, kept current with the suite-0 pivot.
-- **`docs/benchmarks.md`** — measured ROM/RAM per layer + CoAP latency (base & DTLS).
-  Regenerate with `just footprint` / `python3 scripts/coap_latency.py`.
+- **`docs/benchmarks.md`** — measured ROM/RAM per layer + CoAP latency for all
+  three variants (base, DTLS, OSCORE), on the perf-config images. Regenerate with
+  `just footprint` and `just latency` / `latency-dtls` / `latency-oscore`
+  (the last drives `host_client --bench`).
 - **`README.md`** — accurate for base/DTLS, but its **OSCORE section is stale**
   (predates the suite-0 / libedhoc / native-host-client pivot; still says suite-2 +
   aiocoap/lakers + "prototype"). Trust this file and the plan for OSCORE state.

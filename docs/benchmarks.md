@@ -1,165 +1,210 @@
-# Benchmarks: memory & performance — USB-NCM+CoAP vs USB-ACM+UART+binary protocol
+# Benchmarks: memory & performance — base / DTLS / OSCORE
 
-Board `zbook/rp2350b/m33` (RP2350B: 2 MB flash, 520 KB RAM), Zephyr v4.4.0,
-zephyr-sdk arm-zephyr-eabi, `-Os`. Numbers are **bytes**, measured (not estimated):
-memory from `west build -t rom_report`/`-t ram_report` (`size_report`, per
-`ZEPHYR_BASE` path) cross-checked against `zephyr.map`; latency from
-`scripts/coap_latency.py`. Regenerate with `just footprint` and
-`python3 scripts/coap_latency.py [--dtls]`.
+The three `usb_ncm_net` security profiles, measured on **board `zbook/rp2350b/m33`**
+(RP2350B: 2 MB flash, 520 KB RAM), **Zephyr v4.4.0**, zephyr-sdk arm-zephyr-eabi,
+`-Os`. Numbers are **bytes** and **milliseconds**, measured (not estimated):
 
-**Logging is OFF** in the firmware (`CONFIG_LOG=n`): per-request `LOG_*` calls do
-synchronous UART work that perturbs transmission and inflates latency, so they're
-compiled out. Builds compared:
+- **memory** from `west build -t rom_report` / `-t ram_report` (`size_report`),
+  cross-checked against the linker's `FLASH`/`RAM` region report;
+- **latency** from `scripts/coap_latency.py` (plaintext, DTLS) and
+  `host_client --bench` (OSCORE), 1000 samples/endpoint over one persistent
+  connection.
 
-| Firmware / build | Transport | App |
-|---|---|---|
-| `usb_ncm_net` **base** (`prj.conf`, `just build`) | USB CDC-NCM → IPv4/UDP | plaintext CoAP |
-| `usb_ncm_net` **DTLS** (`+dtls.conf`, `just build-dtls`) | USB CDC-NCM → IPv4/UDP | CoAPS (DTLS 1.2, **PSK**) |
-| `esp01_flasher` (sibling) | USB CDC-ACM ↔ UART | none (transparent bridge) |
+**All figures are the PERF-config images** (`perf.conf`: `CONFIG_SHELL=n`,
+`CONFIG_LOG=n`) — i.e. the *exact* firmware the latency runs use, so memory and
+performance describe the same binary. The interactive shell + logging (the dev
+console) is scaffolding, not part of a shipped link; adding it back costs
+**~49 KB flash + ~7.5 KB RAM** on base/DTLS and **~63 KB flash** on OSCORE (extra
+flash = libedhoc/uoscore log strings). Regenerate everything with `just footprint`
++ `just latency[-dtls|-oscore]`.
 
-The base is minimal (IPv4/UDP only, trimmed pools, bare console, no logging). The
-DTLS variant adds mbedTLS + a PSK-authenticated CoAPS service
-(`TLS_PSK_WITH_AES_128_CCM_8`, RFC 7252's mandatory mode) on UDP 5684.
+| Variant | Conf | Port | Security |
+|---|---|---|---|
+| **base**   | `prj.conf`      | 5683 | none (plaintext CoAP) |
+| **DTLS**   | `+dtls.conf`    | 5684 | CoAPS DTLS 1.2, **PSK** `TLS_PSK_WITH_AES_128_CCM_8` (RFC 7252 MTI) |
+| **OSCORE** | `+oscore.conf`  | 5683 | **EDHOC** (RFC 9528, method 3 / suite 0 / X25519) keys **OSCORE** (RFC 8613), over plaintext UDP |
 
 ## TL;DR
 
-- **"Network over USB" itself** (CDC-NCM class + IPv4/UDP + Ethernet L2):
-  **~21.9 KB flash, ~14 KB RAM**; the IPv4/UDP+L2 stack alone is ~19.3 KB flash,
-  ~90 % irreducible core.
-- **Plaintext CoAP stack**: **~4.6 KB flash + ~1 KB app, ~2.5 KB RAM**.
-- **Net-new cost of plaintext NCM+CoAP over ACM+UART+binary**: **≈ +22 KB flash,
-  +10 KB RAM** (~1.1 % flash, ~2 % RAM of the RP2350B).
-- **Adding DTLS/CoAPS (PSK)** on top of the base: **+40 KB flash, +32 KB RAM** —
-  the mbedTLS+tf-psa-crypto library is ~30 KB flash (AES-CCM, SHA-256, DTLS; **no
-  X.509/ECDSA/ECDHE**), plus a 16 KB mbedTLS heap. (Cert-based X.509 was nearly
-  double: +78 KB flash / +85 KB RAM — see note.)
-- **Latency over USB-NCM** (0 % loss): plaintext **~1.7 ms median**, DTLS-PSK
-  **~3.2 ms median** (+~1.5 ms for AES-CCM), DTLS handshake **~20 ms** one-time.
-  **CON == NON** — confirmable adds no per-exchange latency.
+- **Whole-image (perf config):** base **106.6 KB flash / 32.3 KB RAM**, DTLS
+  **146.8 / 66.1**, OSCORE **171.5 / 57.3**. All well under the RP2350B's budget
+  (≤ 9.4 % flash, ≤ 12.8 % RAM).
+- **Cost of DTLS-PSK over base:** **+40 KB flash / +34 KB RAM** — the mbedTLS +
+  tf-psa-crypto library is ~30 KB flash (AES-CCM, SHA-256, HMAC, TLS-PRF, DTLS
+  record/handshake; **no X.509/ECDSA/ECDHE**), and RAM is dominated by the 16 KB
+  mbedTLS heap.
+- **Cost of EDHOC+OSCORE over base:** **+65 KB flash / +25 KB RAM** — a ~62 KB
+  crypto stack (tf-psa PSA 29.6 KB, libedhoc 14.8 KB, uoscore-OSCORE 9.3 KB,
+  compact25519 X25519 6.0 KB, zcbor 2.2 KB).
+- **OSCORE uses *less* RAM than DTLS** (57 vs 66 KB) despite far more code:
+  `MBEDTLS_AES_ROM_TABLES=y` moves the ~8.7 KB AES tables to flash, X25519 runs
+  off-heap via compact25519, libedhoc uses a stack (VLA) backend (0 static RAM),
+  and OSCORE keeps the smaller base net pools. DTLS instead grows the pools and
+  pays the AES RAM tables.
+- **Latency (0 % loss, transport-bound):** plaintext **~1.6 ms** median, DTLS-PSK
+  **~3.2 ms** (+~1.6 ms for AES-CCM), OSCORE **~3.8 ms** (+~2.2 ms; ~0.6 ms over
+  DTLS). **CON == NON** — confirmable adds no per-exchange latency.
+- **Handshake is where the two secure profiles diverge sharply:** DTLS-PSK is
+  **~19 ms** (symmetric only), EDHOC is **~1.6 s** — a one-time, ~85× cost, almost
+  entirely the **software X25519 static-DH on the M33** (no ECC accelerator). The
+  trade: EDHOC gives real (elliptic-curve) key agreement and per-device raw-public-key
+  identity; PSK gives a fast handshake from a pre-shared secret.
 
-## Whole-image totals
+## Whole-image totals (perf config)
 
-| Build | FLASH | RAM |
-|---|--:|--:|
-| `usb_ncm_net` base (plaintext) | 131,864 | 36,712 |
-| `usb_ncm_net` DTLS/CoAPS (PSK) | 172,156 | 69,240 |
-| `esp01_flasher` (ACM+UART) | 111,432 | 25,032 |
+| Variant | FLASH | RAM | ΔFLASH vs base | ΔRAM vs base |
+|---|--:|--:|--:|--:|
+| base   | 106,584 | 32,256 | — | — |
+| DTLS   | 146,848 | 66,120 | +40,264 | +33,864 |
+| OSCORE | 171,532 | 57,312 | +64,948 | +25,056 |
 
-(`esp01_flasher` is measured as-shipped: logging on, no shell — so read the
-per-layer tables, not the raw whole-image gap, for the real transport cost.)
+OSCORE vs DTLS: **+24,684 flash, −8,808 RAM** (OSCORE is bigger in flash, smaller
+in RAM). Dev build (shell+log on) adds, per variant: base +49,092 flash / +7,448
+RAM, DTLS +49,288 / +7,456, OSCORE +62,956 / +7,464.
 
-## `usb_ncm_net` base — per layer (CoAP separated)
+## Per-layer ROM (perf config)
 
-| Layer | ROM | RAM |
-|---|--:|--:|
-| USB device core — `drivers/usb/udc` + `device_next` core *(shared w/ ACM)* | 13,009 | 5,626 |
-| CDC-NCM function class — `class/usbd_cdc_ncm.c` | 2,601 | 4,370 |
-| net/ip — IP, UDP, sockets, contexts, `net_pkt`, traffic classes | 15,958 | 9,496 |
-| net L2 — `net/l2/ethernet` (ARP) | 3,310 | 201 |
-| **➤ "Network over USB" subtotal** (NCM class + net/ip + L2) | **21,869** | **14,067** |
-| **➤ CoAP stack** — `subsys/net/lib/coap` | **4,610** | **2,486** |
-| CoAP app resources — `src/coap_server.c` (`hello`, `led`) | ~1,000 | 117 |
-| *Bare shell console (no logging)* | *15,250* | *3,771* |
-
-Biggest RAM item is still `net_buf_data_cdc_ncm_ep_pool` = 4,096 (hardcoded
-`2×2048` in the NCM driver); then `net_pkt` rx/tx 2×2,048 and the CoAP thread
-stack 2,048.
-
-## Delta — plaintext NCM+CoAP vs ACM+binary
-
-The layers that differ (shared USB core excluded). net/ip+L2 and CoAP are
-NCM-only; the ACM path instead carries a UART driver + ring buffer.
-
-| | ACM+UART-only | NCM+CoAP-only | Δ |
+| Layer | base | DTLS | OSCORE |
 |---|--:|--:|--:|
-| net/ip + L2 (ROM) | 0 | 19,268 | +19,268 |
-| CoAP (ROM) | 0 | 4,610 | +4,610 |
-| UART driver + ring lib (ROM) | ~2,154 | 0 | −2,154 |
-| **ΔROM (approx)** | | | **≈ +22 KB** |
-| net/ip + L2 (RAM) | 0 | 9,697 | +9,697 |
-| CoAP (RAM) | 0 | 2,486 | +2,486 |
-| UART + bridge ring buffers (RAM) | ~4,100 | 0 | −4,100 |
-| **ΔRAM (approx)** | | | **≈ +8–10 KB** |
+| USB device controller (`drivers/usb/udc`) | 5,960 | 5,960 | 5,960 |
+| USB `device_next` core + CDC-NCM class | 9,742 | 9,742 | 9,742 |
+| net/ip (IP, UDP, sockets, contexts, `net_pkt`) | 15,894 | 16,026 | 16,038 |
+| net L2 ethernet (ARP) | 3,310 | 3,310 | 3,310 |
+| CoAP (`subsys/net/lib/coap`) | 4,732 | 4,804 | 4,740 |
+| mbedTLS (SSL/TLS record + handshake) | 0 | 16,455 | 88 |
+| tf-psa-crypto (PSA: AES-CCM/SHA-256/HKDF) | 0 | 13,914 | 29,574 |
+| libedhoc (EDHOC engine + suite-0 helper) | 0 | 0 | 14,794 |
+| uoscore-uedhoc (OSCORE half) | 0 | 0 | 9,284 |
+| compact25519 (X25519) | 0 | 0 | 5,966 |
+| zcbor | 0 | 0 | 2,194 |
+| app (`src/*.c`) | 1,438 | 1,524 | 2,685 |
+| **everything else** (kernel, picolibc, RP2350 HAL, net core, entropy, vector table) | ~65,488 | ~75,097 | ~67,141 |
+| **TOTAL (rom_report Root)** | **106,564** | **146,832** | **171,516** |
 
-The ~19 KB net/ip+L2 is the fixed price of a real IP stack; the ACM+binary path
-avoids it with raw byte framing. On the RP2350B that's ~1.1 % flash / ~2 % RAM.
+## Per-layer RAM (perf config)
+
+| Layer | base | DTLS | OSCORE |
+|---|--:|--:|--:|
+| USB device controller | 3,950 | 3,950 | 3,950 |
+| USB `device_next` + CDC-NCM (incl. `net_buf_data_cdc_ncm_ep_pool` 4,096) | 5,918 | 5,918 | 5,918 |
+| net/ip (pools scale with `NET_BUF`/`NET_PKT`/`MAX_CONTEXTS`) | 9,368 | 12,376 | 9,504 |
+| net L2 ethernet | 201 | 201 | 201 |
+| CoAP (server thread stack + service state) | 2,422 | 4,470 | 8,950 |
+| mbedTLS PSA heap (`MBEDTLS_HEAP_SIZE`) | 0 | 16,408 | 16,384 |
+| tf-psa-crypto (AES RAM tables etc.) | 0 | 9,424 | 680 |
+| libedhoc (stack/VLA backend → no static RAM) | 0 | 0 | 0 |
+| uoscore-uedhoc | 0 | 0 | 14 |
+| app | 237 | 237 | 1,467 |
+| **everything else** (kernel, stacks, BSS) | ~7,766 | ~10,714 | ~7,814 |
+| **TOTAL (ram_report Root)** | **29,862** | **63,698** | **54,886** |
 
 ## Cost of DTLS / CoAPS (PSK)
 
-DTLS layered on the base via `dtls.conf` (mbedTLS 4.x + tf-psa-crypto, DTLS 1.2,
-`TLS_PSK_WITH_AES_128_CCM_8`). Delta vs the plaintext base:
+DTLS layered via `dtls.conf` (mbedTLS 4.x + tf-psa-crypto, DTLS 1.2,
+`TLS_PSK_WITH_AES_128_CCM_8`). Δ vs base: **+40,264 flash / +33,864 RAM**.
 
-| | base | DTLS-PSK | Δ |
-|---|--:|--:|--:|
-| FLASH | 131,864 | 172,156 | **+40,292 (~40 KB)** |
-| RAM | 36,712 | 69,240 | **+32,528 (~32 KB)** |
-
-- **Flash (+40 KB):** mbedTLS + tf-psa-crypto = **30.3 KB** (mbedTLS 16.4 KB +
-  tf-psa-crypto 13.9 KB) — AES-CCM, SHA-256, HMAC, TLS-PRF, DTLS record/handshake.
-  **Zero X.509/ECDSA/ECDH** (confirmed in the map). Plus the TLS socket glue.
-- **RAM (+32 KB):** the **16 KB mbedTLS heap** (`CONFIG_MBEDTLS_HEAP_SIZE`) is the
-  biggest item; the rest is DTLS-sized net buffers + TLS contexts.
+- **Flash (+40 KB):** mbedTLS 16,455 + tf-psa-crypto 13,914 = **30.4 KB** of
+  crypto — AES-CCM, SHA-256, HMAC, TLS-PRF, DTLS record/handshake, **zero
+  X.509/ECDSA/ECDH** — plus the TLS socket glue and bigger net buffers.
+- **RAM (+34 KB):** the **16 KB mbedTLS PSA heap** dominates; then the AES RAM
+  lookup tables inside tf-psa-crypto (~8.7 KB — this build does *not* set
+  `MBEDTLS_AES_ROM_TABLES`), larger net pools (`NET_BUF` 24 vs 16, `NET_PKT` 6 vs
+  4, `MAX_CONTEXTS` 3 vs 2 → +~3 KB in net/ip), and TLS contexts.
 
 **Why PSK, not X.509:** an earlier X.509 (ECDHE-ECDSA) build cost **+78 KB flash /
-+85 KB RAM** — the crypto library alone was 64.8 KB and needed a 60 KB heap, plus
-software ECDHE+ECDSA on the M33 (no ECC accelerator). For a controlled
-point-to-point link, PSK (RFC 7252's mandatory-to-implement mode) is far smaller,
-has a faster handshake, and is secure given a strong pre-shared key; the trade is
-no forward secrecy and no per-device PKI identity.
++85 KB RAM** — the crypto library alone was ~65 KB and needed a 60 KB heap, plus
+software ECDHE+ECDSA on the M33. For a controlled point-to-point link, PSK (RFC
+7252's MTI mode) is far smaller and its handshake is trivial; the trade is no
+forward secrecy and no per-device PKI identity.
+
+## Cost of EDHOC + OSCORE
+
+OSCORE layered via `oscore.conf` (libedhoc EDHOC engine + uoscore-uedhoc's OSCORE
+half + compact25519 X25519, all over PSA). Δ vs base: **+64,948 flash /
++25,056 RAM**. The added crypto stack (perf config):
+
+| | ROM | RAM |
+|---|--:|--:|
+| tf-psa-crypto (PSA AES-CCM / SHA-256 / HKDF; incl. AES ROM tables) | 29,574 | 680 |
+| libedhoc (EDHOC engine + suite-0 helper) | 14,794 | 0 |
+| uoscore-uedhoc (OSCORE half) | 9,284 | 14 |
+| compact25519 (X25519 scalar mult) | 5,966 | 0 |
+| zcbor (CBOR for libedhoc + uoscore) | 2,194 | 0 |
+| mbedTLS (a thin residue; OSCORE uses PSA, not the TLS layer) | 88 | 16,384 |
+| **crypto subtotal** | **~61,900** | **~17,082** |
+
+- **Flash (+65 KB):** the crypto stack above (~62 KB) plus ~1.2 KB of app
+  (`src/edhoc_oscore.c`). tf-psa-crypto is **2.1× the DTLS build's** (29.6 vs
+  13.9 KB) because OSCORE adds HKDF-Extract/Expand and keeps the ~8.7 KB AES
+  lookup tables in flash (`MBEDTLS_AES_ROM_TABLES=y`). X25519 is **not** in
+  mbedTLS — compact25519 does the scalar multiplication (X-coordinate only, so no
+  ECP/bignum/point-decompression), which is why there is no P-256-style ECC bloat.
+- **RAM (+25 KB, i.e. *less* than DTLS):** the **16 KB PSA heap** again, plus a
+  **+6.5 KB CoAP-server thread stack** (`COAP_SERVER_STACK_SIZE=8192` vs base
+  2048 — the whole EDHOC handshake runs synchronously on that thread) and ~1.2 KB
+  app. It stays below DTLS because `MBEDTLS_AES_ROM_TABLES=y` saves the ~8.7 KB
+  AES RAM tables, libedhoc's stack/VLA backend adds no static RAM, and OSCORE
+  keeps the base net-pool sizes rather than DTLS's larger ones.
 
 ## Performance — CoAP round-trip latency
 
-Confirmable (CON) and Non-confirmable (NON) round trips over the live USB-NCM
-link, `scripts/coap_latency.py` (one persistent connection — no per-request
-process/handshake overhead). Logging off. 1000 samples/endpoint, 0 % loss.
-Representative medians (all three endpoints agree within ~0.1 ms → transport-bound):
+Confirmable (CON) and Non-confirmable (NON) round trips over the live USB-NCM link,
+one persistent connection, shell + logging off, 1000 samples/endpoint, 0 % loss.
+Representative medians (all endpoints within ~0.1 ms → transport-bound):
 
-| Transport | CON median | NON median | p95 | p99 | one-time |
+| Transport | CON med | NON med | p95 | p99 | one-time handshake |
 |---|--:|--:|--:|--:|--:|
-| plaintext CoAP (`:5683`) | ~1.70 | ~1.70 | ~2.2 | ~3.0 | — |
-| DTLS-PSK CoAPS (`:5684`) | ~3.2 | ~3.2 | ~3.9 | ~5 | handshake ~20 ms |
+| plaintext CoAP (`:5683`) | ~1.60 | ~1.60 | ~1.75 | ~1.9–2.2 | — |
+| DTLS-PSK CoAPS (`:5684`) | ~3.20 | ~3.20 | ~3.35 | ~3.5 | **~19 ms** |
+| EDHOC+OSCORE (`:5683`) | ~3.80 | — † | ~4.0 | ~4.1–4.35 | **~1.6 s** |
 
-*(ms; full round trip: host → board IP/UDP/(DTLS)/CoAP + handler → host)*
+*(ms; full round trip host → board IP/UDP/(security)/CoAP + handler → host.
+† OSCORE was measured with the CON-only `host_client`; on the clean link CON==NON
+holds for the other two, and OSCORE has no reason to differ.)*
 
 - **Transport-bound.** `GET /hello`, `GET /led` and `PUT /led` are
-  indistinguishable → the CoAP parse + resource handler cost is negligible.
-- **CON == NON.** Confirmable reliability doesn't add latency for a single
-  exchange on this clean link (retransmit only matters under loss).
-- **Plaintext ~1.7 ms floor** = USB full-speed frame timing (~two 1 ms frames per
-  round trip); removing logging took it from ~2.1 → ~1.7 ms.
-- **DTLS-PSK adds ~1.5 ms/request** (AES-128-CCM-8 encrypt/decrypt + slightly
-  larger records) on top of the transport, plus a **~20 ms one-time handshake**
-  (fast because PSK has no ECC). Occasional host-side USB-scheduling outliers push
-  the max to tens of ms; median/p95 are stable.
+  indistinguishable → CoAP parse + resource-handler cost is negligible.
+- **CON == NON.** Confirmable reliability adds no latency for a single exchange on
+  this clean link (retransmit only matters under loss).
+- **Plaintext ~1.6 ms floor** = USB full-speed frame timing (~two 1 ms frames per
+  round trip).
+- **DTLS-PSK adds ~1.6 ms/request** (AES-128-CCM-8 + slightly larger records) on a
+  **~19 ms** symmetric handshake.
+- **OSCORE adds ~2.2 ms/request** (~0.6 ms over DTLS — OSCORE option processing +
+  AEAD both ways, on the CoAP-server thread). Its **handshake is ~1.6 s** and very
+  stable (1.60–1.65 s across runs): this is the software **X25519 static-DH** on
+  the Cortex-M33, not the network — EDHOC method 3 does multiple scalar
+  multiplications per side. It is a *one-time, per-boot* cost (a fresh EDHOC run
+  re-keys OSCORE, SSN from 0), amortized over the session.
 
 Not covered: sustained throughput, and a like-for-like ACM+UART latency baseline.
 
 ## Notes & caveats
 
-- Logging is off; re-enable `CONFIG_LOG` only for debugging (it perturbs latency).
-- The PSK identity/key in `src/coap_server.c` (id `zbook`, 16-byte key) and the
-  matching values in `scripts/coap_latency.py` are DEV credentials — replace and
-  provision out-of-band for production.
+- Numbers refreshed 2026-07-03; they supersede an earlier revision (the app and
+  module set changed, and that revision predated the OSCORE variant).
+- Shell + logging are **off** in the measured images; the dev console adds the
+  flash/RAM noted at the top and its synchronous UART I/O inflates latency.
+- The PSK identity/key (`zbook` / `zbook-dtls-psk!!` in `src/coap_server.c`, mirrored
+  in `scripts/coap_latency.py`) and the EDHOC credentials (`scripts/edhoc_keys.py`)
+  are **DEV** values — replace and provision out-of-band for production.
 - `dtls.conf` builds with `-DMBEDTLS_FATAL_WARNINGS=OFF` (upstream tf-psa-crypto
-  `-Werror` warnings, not this app). DTLS needs the `mbedtls` + `tf-psa-crypto`
-  west modules (in `west.yml`).
-- The X.509 latency couldn't be measured (the software ECDHE-ECDSA handshake
-  wouldn't complete with the Python test client); PSK made it trivial.
-- `esp01_flasher` ACM figures are its as-shipped config (logging on, headless);
-  the "binary protocol" app layer isn't measured (it's a transparent bridge,
-  assumed small).
+  `-Werror` warnings, not this app).
+- The X.509 latency was never measured (the software ECDHE-ECDSA handshake wouldn't
+  complete with the Python test client); PSK and EDHOC/X25519 both do.
+- OSCORE latency is produced by the native `host_client --bench` (EDHOC Initiator +
+  OSCORE client built from the same libedhoc/uoscore libraries the device runs), so
+  interop is guaranteed at the encoder level.
 
 ## Regenerate
 
 ```bash
-# memory (from usb_ncm_net/):
+# memory — pristine-builds the three perf variants and dumps rom/ram reports
 just footprint
 
-# ACM baseline (from esp01_flasher/):
-west build -p always -b zbook/rp2350b/m33 -d build
-west build -d build -t rom_report && west build -d build -t ram_report
-
-# performance (host, NCM up at 192.0.2.2):
-python3 scripts/coap_latency.py          # plaintext, base build
-python3 scripts/coap_latency.py --dtls   # CoAPS, DTLS build
+# performance (host, NCM link up at 192.0.2.2; flash the matching perf build,
+# power-cycle the board to re-enumerate USB, then):
+just flash-perf         && just latency          # plaintext  (:5683)
+just flash-dtls-perf    && just latency-dtls      # DTLS-PSK   (:5684)
+just flash-oscore-perf  && just latency-oscore    # EDHOC+OSCORE (:5683)
 ```

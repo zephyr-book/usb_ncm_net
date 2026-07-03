@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 extern "C" {
@@ -40,10 +41,22 @@ extern "C" {
 #include "cantcoap.h"
 #include "edhoc_creds_client.h"
 
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 #define MSG_MAX	   256
 #define OSCORE_MAX 512
 
 static const char *g_host = "192.0.2.1";
+
+/* Monotonic wall-clock in milliseconds (for latency timing). */
+static double now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
+}
 
 /* ---- EDHOC credential callbacks (Initiator role) ---- */
 
@@ -155,8 +168,16 @@ static int edhoc_post(int sock, const uint8_t *payload, size_t len, uint8_t *res
 
 /* ---- OSCORE-protected request ---- */
 
+/* Perform one OSCORE-protected request/response. When @rtt_ms is non-NULL it is
+ * set to the wire round-trip (just-before-send .. datagram-received) in ms --
+ * the client-side coap2oscore encrypt is done before timing starts and the
+ * oscore2coap decrypt after it stops, so the number reflects device+transport
+ * cost (comparable to the plaintext/DTLS probe in scripts/coap_latency.py).
+ * @quiet suppresses the per-request line so its synchronous stdout I/O does not
+ * perturb the timing loop. */
 static int oscore_request(int sock, struct context *osc, CoapPDU::Code code,
-			  const char *uri, const uint8_t *payload, size_t payload_len)
+			  const char *uri, const uint8_t *payload, size_t payload_len,
+			  double *rtt_ms = NULL, bool quiet = false)
 {
 	static uint16_t mid = 256;
 	static uint32_t token = 0x1000;
@@ -177,39 +198,101 @@ static int oscore_request(int sock, struct context *osc, CoapPDU::Code code,
 	enum err e = coap2oscore(pdu.getPDUPointer(), (uint32_t)pdu.getPDULength(), oscore_buf,
 				 &oscore_len, osc);
 	if (e != ok) {
-		printf("coap2oscore failed (%d)\n", e);
+		if (!quiet) {
+			printf("coap2oscore failed (%d)\n", e);
+		}
 		return -1;
 	}
 
+	double t0 = now_ms();
 	if (send(sock, oscore_buf, oscore_len, 0) < 0) {
-		printf("send failed\n");
+		if (!quiet) {
+			printf("send failed\n");
+		}
 		return -1;
 	}
 
 	uint8_t buf[MAXLINE];
 	int n = recv(sock, buf, sizeof(buf), 0);
 	if (n < 0) {
-		printf("  %-14s -> no response\n", uri);
+		if (!quiet) {
+			printf("  %-14s -> no response\n", uri);
+		}
 		return -1;
+	}
+	if (rtt_ms) {
+		*rtt_ms = now_ms() - t0;
 	}
 
 	uint8_t coap_buf[OSCORE_MAX];
 	uint32_t coap_len = sizeof(coap_buf);
 	e = oscore2coap(buf, n, coap_buf, &coap_len, osc);
 	if (e != ok && e != first_request_after_reboot) {
-		printf("  %-14s -> oscore2coap failed (%d)\n", uri, e);
+		if (!quiet) {
+			printf("  %-14s -> oscore2coap failed (%d)\n", uri, e);
+		}
 		return -1;
 	}
 
 	CoapPDU rx(coap_buf, coap_len);
 	if (!rx.validate()) {
-		printf("  %-14s -> invalid inner CoAP\n", uri);
+		if (!quiet) {
+			printf("  %-14s -> invalid inner CoAP\n", uri);
+		}
 		return -1;
 	}
-	int pl = rx.getPayloadLength();
-	printf("  %-14s -> code %d.%02d  \"%.*s\"\n", uri, (rx.getCode() >> 5),
-	       (rx.getCode() & 0x1f), pl, (char *)rx.getPayloadPointer());
+	if (!quiet) {
+		int pl = rx.getPayloadLength();
+		printf("  %-14s -> code %d.%02d  \"%.*s\"\n", uri, (rx.getCode() >> 5),
+		       (rx.getCode() & 0x1f), pl, (char *)rx.getPayloadPointer());
+	}
 	return 0;
+}
+
+/* Time @count OSCORE-protected round trips of one endpoint (after @warmup
+ * untimed ones) over the persistent context, and print min/mean/median/p95/p99/
+ * max/sd/loss in the same shape scripts/coap_latency.py uses. */
+static void bench_endpoint(int sock, struct context *osc, const char *label,
+			   CoapPDU::Code code, const char *uri, const uint8_t *payload,
+			   size_t payload_len, int count, int warmup)
+{
+	std::vector<double> rtts;
+	rtts.reserve(count);
+	int losses = 0;
+	for (int i = 0; i < count + warmup; i++) {
+		double rtt = -1.0;
+		int r = oscore_request(sock, osc, code, uri, payload, payload_len, &rtt, true);
+		if (i < warmup) {
+			continue;
+		}
+		if (r != 0 || rtt < 0.0) {
+			losses++;
+		} else {
+			rtts.push_back(rtt);
+		}
+	}
+	if (rtts.empty()) {
+		printf("%-14s no responses (loss=%d)\n", label, losses);
+		return;
+	}
+	std::sort(rtts.begin(), rtts.end());
+	size_t n = rtts.size();
+	double sum = 0.0;
+	for (double v : rtts) {
+		sum += v;
+	}
+	double mean = sum / (double)n;
+	double var = 0.0;
+	for (double v : rtts) {
+		var += (v - mean) * (v - mean);
+	}
+	double sd = std::sqrt(var / (double)n);
+	double med = (n % 2) ? rtts[n / 2] : (rtts[n / 2 - 1] + rtts[n / 2]) / 2.0;
+	size_t p95 = (size_t)std::lround(0.95 * (double)(n - 1));
+	size_t p99 = (size_t)std::lround(0.99 * (double)(n - 1));
+	printf("%-14s n=%-5zu min=%6.3f  mean=%6.3f  med=%6.3f  p95=%6.3f  p99=%6.3f  "
+	       "max=%7.3f  sd=%5.3f  loss=%d  (ms)\n",
+	       label, n, rtts[0], mean, med, rtts[p95], rtts[p99], rtts[n - 1], sd, losses);
 }
 
 /* CBOR encoding of a one-byte connection identifier (RFC 9528 3.3.2). */
@@ -220,8 +303,20 @@ static uint8_t cid_to_cbor(int v)
 
 int main(int argc, char **argv)
 {
-	if (argc > 1) {
-		g_host = argv[1];
+	/* [host] [--bench] [--count N] [--warmup N]. Without --bench the tool does
+	 * the original one-shot demo round-trip; --bench times a latency loop. */
+	bool bench = false;
+	int count = 1000, warmup = 50;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--bench") == 0) {
+			bench = true;
+		} else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) {
+			count = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--warmup") == 0 && i + 1 < argc) {
+			warmup = atoi(argv[++i]);
+		} else if (argv[i][0] != '-') {
+			g_host = argv[i];
+		}
 	}
 
 	if (psa_crypto_init() != PSA_SUCCESS) {
@@ -272,6 +367,7 @@ int main(int argc, char **argv)
 	int ret;
 
 	/* message_1: prefix CBOR true (0xf5), RFC 9668. */
+	double t_hs0 = now_ms();
 	ret = edhoc_message_1_compose(&ctx, msg, sizeof(msg), &msg_len);
 	if (ret != EDHOC_SUCCESS) {
 		printf("message_1_compose failed (%d)\n", ret);
@@ -336,9 +432,29 @@ int main(int argc, char **argv)
 		printf("oscore_context_init failed\n");
 		return 1;
 	}
+	double hs_ms = now_ms() - t_hs0;
 	printf("OSCORE context ready\n\n");
 
-	/* ---- OSCORE-protected round-trip ---- */
+	if (bench) {
+		/* Latency loop: tighten the recv timeout (the handshake is done) and
+		 * time the OSCORE-protected round trips, mirroring coap_latency.py. */
+		tv.tv_sec = 2;
+		tv.tv_usec = 0;
+		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+		printf("OSCORE RTT to coap://%s (%d samples, %d warmup)\n", g_host, count, warmup);
+		printf("EDHOC+OSCORE handshake: %.3f ms (one-time)\n\n", hs_ms);
+		bench_endpoint(sock, &osc, "CON GET /hello", CoapPDU::COAP_GET, "hello", NULL, 0,
+			       count, warmup);
+		bench_endpoint(sock, &osc, "CON GET /led", CoapPDU::COAP_GET, "led", NULL, 0,
+			       count, warmup);
+		bench_endpoint(sock, &osc, "CON PUT /led=1", CoapPDU::COAP_PUT, "led",
+			       (const uint8_t *)"1", 1, count, warmup);
+		close(sock);
+		return 0;
+	}
+
+	/* ---- OSCORE-protected round-trip (demo) ---- */
 	oscore_request(sock, &osc, CoapPDU::COAP_GET, "hello", NULL, 0);
 	oscore_request(sock, &osc, CoapPDU::COAP_GET, "led", NULL, 0);
 	oscore_request(sock, &osc, CoapPDU::COAP_PUT, "led", (const uint8_t *)"1", 1);

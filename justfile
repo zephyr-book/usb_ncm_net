@@ -15,7 +15,7 @@ openodc_dir := "~/.local/openocd"
 #   coap-client -m get coaps://192.0.2.1/led                # DTLS variant (port 5684)
 
 clean:
-    rip build build-dtls build-perf build-dtls-perf build-oscore
+    rip build build-dtls build-oscore build-perf build-dtls-perf build-oscore-perf
 
 # Base build: plaintext CoAP, minimal IPv4/UDP stack (prj.conf).
 build:
@@ -28,12 +28,16 @@ build-dtls:
     west build -p always -b zbook/rp2350b/m33 -d build-dtls -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF
 
 # Performance-measurement builds: shell + logging off (perf.conf) so they don't
-# perturb the scripts/coap_latency.py timing. Plaintext and DTLS variants.
+# perturb the latency timing. Plaintext, DTLS, and OSCORE variants -- these are
+# also the images measured in docs/benchmarks.md.
 build-perf:
     west build -p always -b zbook/rp2350b/m33 -d build-perf -- -DEXTRA_CONF_FILE=perf.conf
 
 build-dtls-perf:
     west build -p always -b zbook/rp2350b/m33 -d build-dtls-perf -- -DEXTRA_CONF_FILE="dtls.conf;perf.conf" -DMBEDTLS_FATAL_WARNINGS=OFF
+
+build-oscore-perf:
+    west build -p always -b zbook/rp2350b/m33 -d build-oscore-perf -- -DEXTRA_CONF_FILE="oscore.conf;perf.conf"
 
 # EDHOC (RFC 9528) + OSCORE (RFC 8613) variant: prj.conf + oscore.conf. Needs the
 # generated credentials header (just keys) and the uoscore-uedhoc/zcbor west
@@ -57,6 +61,9 @@ flash-dtls-perf:
 flash-oscore:
     west flash -d build-oscore --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
 
+flash-oscore-perf:
+    west flash -d build-oscore-perf --openocd {{ openocd_bin }} --openocd-search {{ openodc_dir }}
+
 # Send a CoAP request via the Python client (coap-client-style). Works over
 # plaintext AND DTLS-PSK -- unlike libcoap coap-client, which can't negotiate the
 # board's PSK-CCM8 suite. Uses scripts/.venv (see `just venv`). Examples:
@@ -65,6 +72,24 @@ flash-oscore:
 #   just coap --dtls put led -e 1
 coap *args:
     scripts/.venv/bin/python scripts/coap_cli.py {{ args }}
+
+# ---- CoAP round-trip latency probes (docs/benchmarks.md) ----
+# Flash the matching perf build (flash-perf / flash-dtls-perf / flash-oscore-perf),
+# power-cycle the board so USB re-enumerates, and re-apply the host IP (192.0.2.2)
+# before running these.
+
+# Plaintext CoAP latency (:5683). 1000 samples/endpoint, CON + NON.
+latency:
+    scripts/.venv/bin/python scripts/coap_latency.py
+
+# DTLS-PSK CoAPS latency (:5684). Includes the one-time DTLS handshake time.
+latency-dtls:
+    scripts/.venv/bin/python scripts/coap_latency.py --dtls
+
+# EDHOC+OSCORE latency (:5683): times the EDHOC handshake once, then the
+# OSCORE-protected round trips, via the native host client's --bench mode.
+latency-oscore host="192.0.2.1": build-host-client
+    host_client/build/edhoc_oscore_client {{ host }} --bench
 
 # ---- Host Python tooling (scripts/.venv) ----
 
@@ -95,12 +120,13 @@ edhoc-client host="192.0.2.1": build-host-client
 erase:
     {{ openocd_bin }} -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "init; reset halt; flash erase_sector 0 0 last; shutdown"
 
-# Regenerate the ROM/RAM reports behind docs/benchmarks.md (both variants).
+# Regenerate the ROM/RAM reports behind docs/benchmarks.md (all three variants,
+# perf config = shell+log off -- the same images the latency runs use).
 # Pristine-builds each, then dumps the size_report trees to stdout.
-footprint:
-    west build -p always -b zbook/rp2350b/m33 -d build
-    west build -p always -b zbook/rp2350b/m33 -d build-dtls -- -DEXTRA_CONF_FILE=dtls.conf -DMBEDTLS_FATAL_WARNINGS=OFF
-    west build -d build -t rom_report
-    west build -d build -t ram_report
-    west build -d build-dtls -t rom_report
-    west build -d build-dtls -t ram_report
+footprint: build-perf build-dtls-perf build-oscore-perf
+    west build -d build-perf -t rom_report
+    west build -d build-perf -t ram_report
+    west build -d build-dtls-perf -t rom_report
+    west build -d build-dtls-perf -t ram_report
+    west build -d build-oscore-perf -t rom_report
+    west build -d build-oscore-perf -t ram_report
