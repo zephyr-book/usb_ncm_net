@@ -40,8 +40,9 @@ flash = libedhoc/uoscore log strings). Regenerate everything with `just footprin
   runs on the on-chip SHA-256 block via Zephyr's crypto driver
   (`raspberrypi,pico-sha256`) instead of PSA software. Costs **+682 B flash / +34 B
   RAM** in *every* image — the driver is built into all three (base/DTLS carry it
-  **unused**; only OSCORE calls it) — with **no measurable latency effect** (three
-  ~tens-of-bytes hashes against the ~1.6 s X25519-bound handshake). HKDF/HMAC and
+  **unused**; only OSCORE calls it) — with **no measurable latency effect**
+  (handshake re-measured at **1599 ms**, unchanged; the three ~tens-of-bytes hashes
+  are µs-scale against the X25519-bound handshake). HKDF/HMAC and
   AES-CCM stay on PSA: the block is hash-only and tf-psa-crypto 1.0 dropped the
   mbedTLS SHA-256 ALT hook, so the PSA path can't be redirected.
 - **OSCORE uses *less* RAM than DTLS** (57 vs 66 KB) despite far more code:
@@ -50,10 +51,10 @@ flash = libedhoc/uoscore log strings). Regenerate everything with `just footprin
   and OSCORE keeps the smaller base net pools. DTLS instead grows the pools and
   pays the AES RAM tables.
 - **Latency (0 % loss, transport-bound):** plaintext **~1.6 ms** median, DTLS-PSK
-  **~3.2 ms** (+~1.6 ms for AES-CCM), OSCORE **~3.8 ms** (+~2.2 ms; ~0.6 ms over
+  **~3.3 ms** (+~1.7 ms for AES-CCM), OSCORE **~3.95 ms** (+~2.35 ms; ~0.65 ms over
   DTLS). **CON == NON** — confirmable adds no per-exchange latency.
 - **Handshake is where the two secure profiles diverge sharply:** DTLS-PSK is
-  **~19 ms** (symmetric only), EDHOC is **~1.6 s** — a one-time, ~85× cost, almost
+  **~19.6 ms** (symmetric only), EDHOC is **~1.60 s** — a one-time, ~80× cost, almost
   entirely the **software X25519 static-DH on the M33** (no ECC accelerator). The
   trade: EDHOC gives real (elliptic-curve) key agreement and per-device raw-public-key
   identity; PSK gives a fast handshake from a pre-shared secret.
@@ -175,8 +176,8 @@ Representative medians (all endpoints within ~0.1 ms → transport-bound):
 | Transport | CON med | NON med | p95 | p99 | one-time handshake |
 |---|--:|--:|--:|--:|--:|
 | plaintext CoAP (`:5683`) | ~1.60 | ~1.60 | ~1.75 | ~1.9–2.2 | — |
-| DTLS-PSK CoAPS (`:5684`) | ~3.20 | ~3.20 | ~3.35 | ~3.5 | **~19 ms** |
-| EDHOC+OSCORE (`:5683`) | ~3.80 | — † | ~4.0 | ~4.1–4.35 | **~1.6 s** |
+| DTLS-PSK CoAPS (`:5684`) | ~3.30 | ~3.30 | ~3.45 | ~3.55–3.85 | **~19.6 ms** |
+| EDHOC+OSCORE (`:5683`) | ~3.95 | — † | ~4.10 | ~4.25–4.57 | **~1.60 s** |
 
 *(ms; full round trip host → board IP/UDP/(security)/CoAP + handler → host.
 † OSCORE was measured with the CON-only `host_client`; on the clean link CON==NON
@@ -188,21 +189,22 @@ holds for the other two, and OSCORE has no reason to differ.)*
   this clean link (retransmit only matters under loss).
 - **Plaintext ~1.6 ms floor** = USB full-speed frame timing (~two 1 ms frames per
   round trip).
-- **DTLS-PSK adds ~1.6 ms/request** (AES-128-CCM-8 + slightly larger records) on a
-  **~19 ms** symmetric handshake.
-- **OSCORE adds ~2.2 ms/request** (~0.6 ms over DTLS — OSCORE option processing +
-  AEAD both ways, on the CoAP-server thread). Its **handshake is ~1.6 s** and very
-  stable (1.60–1.65 s across runs): this is the software **X25519 static-DH** on
-  the Cortex-M33, not the network — EDHOC method 3 does multiple scalar
-  multiplications per side. It is a *one-time, per-boot* cost (a fresh EDHOC run
-  re-keys OSCORE, SSN from 0), amortized over the session.
+- **DTLS-PSK adds ~1.7 ms/request** (AES-128-CCM-8 + slightly larger records) on a
+  **~19.6 ms** symmetric handshake.
+- **OSCORE adds ~2.35 ms/request** (~0.65 ms over DTLS — OSCORE option processing +
+  AEAD both ways, on the CoAP-server thread). Its **handshake is ~1.60 s** and very
+  stable (measured 1599 ms; 1.60–1.65 s across runs): this is the software **X25519
+  static-DH** on the Cortex-M33, not the network — EDHOC method 3 does multiple
+  scalar multiplications per side. It is a *one-time, per-boot* cost (a fresh EDHOC
+  run re-keys OSCORE, SSN from 0), amortized over the session.
 - **Moving the transcript hash to the SHA-256 accelerator does not change these
-  latencies.** The handshake is X25519-bound (~1.6 s, ±~50 ms run-to-run); the three
-  transcript hashes are tens of bytes each, µs-scale on either the HW block or PSA
-  software, so any delta is far below the measurement noise. The per-request OSCORE
-  path (~3.8 ms) never touches the transcript hash — it is AEAD only — so it is
-  unaffected by construction. The figures above therefore carry over unchanged; they
-  were **not** re-measured for the accelerator switch.
+  latencies — confirmed by measurement.** With the accelerator enabled the OSCORE
+  handshake is **1599 ms** and round trips **~3.95 ms**, and DTLS is **19.6 ms /
+  ~3.30 ms** — both within run-to-run noise of the software-hash figures. The
+  handshake is X25519-bound (±~50 ms run-to-run) and the three transcript hashes are
+  µs-scale on either path; the per-request OSCORE path (~3.95 ms) is AEAD-only and
+  never touches the transcript hash, so it is unaffected by construction. (Plaintext,
+  a physical USB-frame floor, was not re-run.)
 
 Not covered: sustained throughput, and a like-for-like ACM+UART latency baseline.
 
@@ -210,11 +212,13 @@ Not covered: sustained throughput, and a like-for-like ACM+UART latency baseline
 
 - Numbers refreshed 2026-07-03; they supersede an earlier revision (the app and
   module set changed, and that revision predated the OSCORE variant).
-- Memory re-measured after routing the EDHOC transcript hash through the RP2350
-  SHA-256 accelerator (`CONFIG_CRYPTO=y` + the `sha256` node): **+682 B flash and
-  +34–72 B RAM per image**, all three variants. Latency was **not** re-measured — the
-  change is latency-neutral (see the CoAP round-trip section). To confirm on the
-  bench: `just flash-oscore-perf && just latency-oscore` (and `-dtls` for DTLS).
+- Memory and latency re-measured after routing the EDHOC transcript hash through the
+  RP2350 SHA-256 accelerator (`CONFIG_CRYPTO=y` + the `sha256` node). Memory: **+682 B
+  flash and +34–72 B RAM per image**, all three variants. Latency (hardware, this
+  build): OSCORE handshake **1599 ms** / round trip **~3.95 ms**; DTLS **19.6 ms** /
+  **~3.30 ms** — unchanged within noise, confirming the change is latency-neutral.
+  Plaintext was not re-run (physical USB-frame floor). Reproduce with
+  `just flash-oscore-perf && just latency-oscore` (and `-dtls` for DTLS).
 - Shell + logging are **off** in the measured images; the dev console adds the
   flash/RAM noted at the top and its synchronous UART I/O inflates latency.
 - The PSK identity/key (`zbook` / `zbook-dtls-psk!!` in `src/coap_server.c`, mirrored
