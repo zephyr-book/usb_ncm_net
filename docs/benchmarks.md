@@ -197,6 +197,17 @@ holds for the other two, and OSCORE has no reason to differ.)*
   static-DH** on the Cortex-M33, not the network — EDHOC method 3 does multiple
   scalar multiplications per side. It is a *one-time, per-boot* cost (a fresh EDHOC
   run re-keys OSCORE, SSN from 0), amortized over the session.
+- **The handshake is X25519-*algorithm*-bound, not codegen-bound.** An on-board
+  microbenchmark of compact25519/c25519 measured **~300 ms per X25519 scalar
+  multiplication** on this M33 (both base-point keygen and variable-point
+  ECDH); the responder does ~4 per handshake (≈ 1.2 s), consistent with the
+  ~1.6 s total. Recompiling *only* the c25519 sources at `-O2` and `-O3` (vs the
+  global `-Os`) moved this by **< 1 %** (~299–301 ms/op) — the cost is c25519's
+  byte-oriented field arithmetic, not the optimization level. A materially
+  faster handshake would need a faster (pure-C) X25519 backend, not a compiler
+  flag. Under WFI/tickless idle (SRAM + execution retained across sleep) this
+  handshake is paid once per power-on and never on wake, so it is a weak factor
+  in the DTLS-vs-OSCORE choice regardless.
 - **Moving the transcript hash to the SHA-256 accelerator does not change these
   latencies — confirmed by measurement.** With the accelerator enabled the OSCORE
   handshake is **1599 ms** and round trips **~3.95 ms**, and DTLS is **19.6 ms /
