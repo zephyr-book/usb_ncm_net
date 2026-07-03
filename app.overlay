@@ -28,3 +28,13 @@
 zephyr_udc0: &usbd {
 	status = "okay";
 };
+
+/*
+ * RP2350 SHA-256 hardware accelerator, left disabled by the SoC dtsi. Enable it so
+ * the Zephyr crypto driver (raspberrypi,pico-sha256) binds. The OSCORE build routes
+ * EDHOC's transcript hash through it (see src/edhoc_oscore.c); the base/DTLS builds
+ * carry the driver but never call it.
+ */
+&sha256 {
+	status = "okay";
+};

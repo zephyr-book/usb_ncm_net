@@ -46,6 +46,11 @@
 #include <zephyr/net/coap.h>
 #include <zephyr/net/coap_service.h>
 
+#if defined(CONFIG_CRYPTO_RPI_PICO_SHA256)
+#include <zephyr/device.h>
+#include <zephyr/crypto/crypto.h>
+#endif
+
 #include <string.h>
 
 #include "coap_server.h"
@@ -173,6 +178,70 @@ static int cred_verify(void *user_ctx, struct edhoc_auth_creds *creds,
 	return EDHOC_SUCCESS;
 }
 
+#if defined(CONFIG_CRYPTO_RPI_PICO_SHA256)
+/*
+ * RP2350 SHA-256 hardware accelerator, reached through Zephyr's crypto device API
+ * (raspberrypi,pico-sha256). We replace only libedhoc's suite-0 transcript-hash
+ * callback (edhoc_cipher_suite_0_hash, a one-shot psa_hash_compute) with the
+ * hardware. Everything else in the suite-0 backend -- HKDF (extract/expand), the
+ * AES-CCM AEAD, and X25519 -- is left as the helper provides it: the block is
+ * hash-only, and tf-psa-crypto 1.0 removed the mbedTLS SHA-256 ALT hook, so the PSA
+ * path cannot be redirected here.
+ */
+static const struct device *const edhoc_sha256_dev = DEVICE_DT_GET(DT_NODELABEL(sha256));
+
+/* Suite-0 crypto backend copy with .hash pointed at the accelerator (see edhoc_setup). */
+static struct edhoc_crypto edhoc_crypto_hw;
+
+/*
+ * One-shot SHA-256 on the RP2350 block; signature matches struct edhoc_crypto::hash.
+ * The driver is single-shot (CAP_SYNC_OPS | CAP_SEPARATE_IO_BUFS) and always emits
+ * the full 32-byte digest, so the whole transcript goes in one hash_compute().
+ */
+static int edhoc_hash_hw(void *user_ctx, const uint8_t *input, size_t input_len,
+			 uint8_t *hash, size_t hash_size, size_t *hash_len)
+{
+	ARG_UNUSED(user_ctx);
+
+	struct hash_ctx ctx = {
+		.flags = CAP_SEPARATE_IO_BUFS | CAP_SYNC_OPS,
+	};
+	struct hash_pkt pkt = {
+		.in_buf = input,
+		.in_len = input_len,
+		.out_buf = hash,
+	};
+	int ret;
+
+	if (input == NULL || input_len == 0 || hash == NULL || hash_size < 32 ||
+	    hash_len == NULL) {
+		return EDHOC_ERROR_INVALID_ARGUMENT;
+	}
+
+	if (!device_is_ready(edhoc_sha256_dev)) {
+		LOG_ERR("SHA-256 accelerator not ready");
+		return EDHOC_ERROR_CRYPTO_FAILURE;
+	}
+
+	ret = hash_begin_session(edhoc_sha256_dev, &ctx, CRYPTO_HASH_ALGO_SHA256);
+	if (ret != 0) {
+		LOG_ERR("SHA-256 HW begin_session failed (%d)", ret);
+		return EDHOC_ERROR_CRYPTO_FAILURE;
+	}
+
+	ret = hash_compute(&ctx, &pkt);
+	(void)hash_free_session(edhoc_sha256_dev, &ctx);
+
+	if (ret != 0) {
+		LOG_ERR("SHA-256 HW compute failed (%d)", ret);
+		return EDHOC_ERROR_CRYPTO_FAILURE;
+	}
+
+	*hash_len = 32;
+	return EDHOC_SUCCESS;
+}
+#endif /* CONFIG_CRYPTO_RPI_PICO_SHA256 */
+
 /* Initialise a fresh responder context for one handshake. */
 static int edhoc_setup(struct edhoc_context *ctx)
 {
@@ -213,7 +282,14 @@ static int edhoc_setup(struct edhoc_context *ctx)
 		return ret;
 	}
 
+#if defined(CONFIG_CRYPTO_RPI_PICO_SHA256)
+	/* Suite-0 backend, but with the transcript hash on the RP2350 accelerator. */
+	edhoc_crypto_hw = *edhoc_cipher_suite_0_get_crypto();
+	edhoc_crypto_hw.hash = edhoc_hash_hw;
+	ret = edhoc_bind_crypto(ctx, &edhoc_crypto_hw);
+#else
 	ret = edhoc_bind_crypto(ctx, edhoc_cipher_suite_0_get_crypto());
+#endif
 	if (ret != EDHOC_SUCCESS) {
 		return ret;
 	}
