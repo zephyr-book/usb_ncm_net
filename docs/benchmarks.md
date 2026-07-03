@@ -26,9 +26,9 @@ flash = libedhoc/uoscore log strings). Regenerate everything with `just footprin
 
 ## TL;DR
 
-- **Whole-image (perf config):** base **106.6 KB flash / 32.3 KB RAM**, DTLS
-  **146.8 / 66.1**, OSCORE **171.5 / 57.3**. All well under the RP2350B's budget
-  (≤ 9.4 % flash, ≤ 12.8 % RAM).
+- **Whole-image (perf config):** base **107.3 KB flash / 32.3 KB RAM**, DTLS
+  **147.6 / 66.2**, OSCORE **172.4 / 57.4**. All well under the RP2350B's budget
+  (≤ 9.4 % flash, ≤ 12.4 % RAM).
 - **Cost of DTLS-PSK over base:** **+40 KB flash / +34 KB RAM** — the mbedTLS +
   tf-psa-crypto library is ~30 KB flash (AES-CCM, SHA-256, HMAC, TLS-PRF, DTLS
   record/handshake; **no X.509/ECDSA/ECDHE**), and RAM is dominated by the 16 KB
@@ -36,6 +36,14 @@ flash = libedhoc/uoscore log strings). Regenerate everything with `just footprin
 - **Cost of EDHOC+OSCORE over base:** **+65 KB flash / +25 KB RAM** — a ~62 KB
   crypto stack (tf-psa PSA 29.6 KB, libedhoc 14.8 KB, uoscore-OSCORE 9.3 KB,
   compact25519 X25519 6.0 KB, zcbor 2.2 KB).
+- **RP2350 SHA-256 accelerator (OSCORE):** EDHOC's transcript hash (TH_2/TH_3/TH_4)
+  runs on the on-chip SHA-256 block via Zephyr's crypto driver
+  (`raspberrypi,pico-sha256`) instead of PSA software. Costs **+682 B flash / +34 B
+  RAM** in *every* image — the driver is built into all three (base/DTLS carry it
+  **unused**; only OSCORE calls it) — with **no measurable latency effect** (three
+  ~tens-of-bytes hashes against the ~1.6 s X25519-bound handshake). HKDF/HMAC and
+  AES-CCM stay on PSA: the block is hash-only and tf-psa-crypto 1.0 dropped the
+  mbedTLS SHA-256 ALT hook, so the PSA path can't be redirected.
 - **OSCORE uses *less* RAM than DTLS** (57 vs 66 KB) despite far more code:
   `MBEDTLS_AES_ROM_TABLES=y` moves the ~8.7 KB AES tables to flash, X25519 runs
   off-heap via compact25519, libedhoc uses a stack (VLA) backend (0 static RAM),
@@ -54,13 +62,13 @@ flash = libedhoc/uoscore log strings). Regenerate everything with `just footprin
 
 | Variant | FLASH | RAM | ΔFLASH vs base | ΔRAM vs base |
 |---|--:|--:|--:|--:|
-| base   | 106,584 | 32,256 | — | — |
-| DTLS   | 146,848 | 66,120 | +40,264 | +33,864 |
-| OSCORE | 171,532 | 57,312 | +64,948 | +25,056 |
+| base   | 107,280 | 32,288 | — | — |
+| DTLS   | 147,552 | 66,160 | +40,272 | +33,872 |
+| OSCORE | 172,412 | 57,392 | +65,132 | +25,104 |
 
-OSCORE vs DTLS: **+24,684 flash, −8,808 RAM** (OSCORE is bigger in flash, smaller
-in RAM). Dev build (shell+log on) adds, per variant: base +49,092 flash / +7,448
-RAM, DTLS +49,288 / +7,456, OSCORE +62,956 / +7,464.
+OSCORE vs DTLS: **+24,860 flash, −8,768 RAM** (OSCORE is bigger in flash, smaller
+in RAM). Dev build (shell+log on) adds, per variant: base +49,492 flash / +7,456
+RAM, DTLS +49,684 / +7,456, OSCORE +63,532 / +7,464.
 
 ## Per-layer ROM (perf config)
 
@@ -77,9 +85,10 @@ RAM, DTLS +49,288 / +7,456, OSCORE +62,956 / +7,464.
 | uoscore-uedhoc (OSCORE half) | 0 | 0 | 9,284 |
 | compact25519 (X25519) | 0 | 0 | 5,966 |
 | zcbor | 0 | 0 | 2,194 |
-| app (`src/*.c`) | 1,438 | 1,524 | 2,685 |
-| **everything else** (kernel, picolibc, RP2350 HAL, net core, entropy, vector table) | ~65,488 | ~75,097 | ~67,141 |
-| **TOTAL (rom_report Root)** | **106,564** | **146,832** | **171,516** |
+| RP2350 SHA-256 accel (`drivers/crypto` 412 + `pico_sha256` HAL 270) | 682 | 682 | 682 |
+| app (`src/*.c`) | 1,438 | 1,524 | 2,861 |
+| **everything else** (kernel, picolibc, RP2350 HAL, net core, entropy, vector table) | ~65,506 | ~75,115 | ~67,159 |
+| **TOTAL (rom_report Root)** | **107,264** | **147,532** | **172,392** |
 
 ## Per-layer RAM (perf config)
 
@@ -94,14 +103,15 @@ RAM, DTLS +49,288 / +7,456, OSCORE +62,956 / +7,464.
 | tf-psa-crypto (AES RAM tables etc.) | 0 | 9,424 | 680 |
 | libedhoc (stack/VLA backend → no static RAM) | 0 | 0 | 0 |
 | uoscore-uedhoc | 0 | 0 | 14 |
-| app | 237 | 237 | 1,467 |
-| **everything else** (kernel, stacks, BSS) | ~7,766 | ~10,714 | ~7,814 |
-| **TOTAL (ram_report Root)** | **29,862** | **63,698** | **54,886** |
+| RP2350 SHA-256 accel driver (`crypto_rpi_pico_sha256_0_data`) | 34 | 34 | 34 |
+| app (OSCORE incl. `edhoc_crypto_hw` 36) | 237 | 237 | 1,503 |
+| **everything else** (kernel, stacks, BSS) | ~7,768 | ~10,716 | ~7,820 |
+| **TOTAL (ram_report Root)** | **29,898** | **63,734** | **54,958** |
 
 ## Cost of DTLS / CoAPS (PSK)
 
 DTLS layered via `dtls.conf` (mbedTLS 4.x + tf-psa-crypto, DTLS 1.2,
-`TLS_PSK_WITH_AES_128_CCM_8`). Δ vs base: **+40,264 flash / +33,864 RAM**.
+`TLS_PSK_WITH_AES_128_CCM_8`). Δ vs base: **+40,272 flash / +33,872 RAM**.
 
 - **Flash (+40 KB):** mbedTLS 16,455 + tf-psa-crypto 13,914 = **30.4 KB** of
   crypto — AES-CCM, SHA-256, HMAC, TLS-PRF, DTLS record/handshake, **zero
@@ -120,8 +130,9 @@ forward secrecy and no per-device PKI identity.
 ## Cost of EDHOC + OSCORE
 
 OSCORE layered via `oscore.conf` (libedhoc EDHOC engine + uoscore-uedhoc's OSCORE
-half + compact25519 X25519, all over PSA). Δ vs base: **+64,948 flash /
-+25,056 RAM**. The added crypto stack (perf config):
+half + compact25519 X25519, all over PSA — except the EDHOC transcript hash, which
+runs on the RP2350 SHA-256 accelerator). Δ vs base: **+65,132 flash / +25,104 RAM**.
+The added crypto stack (perf config):
 
 | | ROM | RAM |
 |---|--:|--:|
@@ -131,9 +142,10 @@ half + compact25519 X25519, all over PSA). Δ vs base: **+64,948 flash /
 | compact25519 (X25519 scalar mult) | 5,966 | 0 |
 | zcbor (CBOR for libedhoc + uoscore) | 2,194 | 0 |
 | mbedTLS (a thin residue; OSCORE uses PSA, not the TLS layer) | 88 | 16,384 |
-| **crypto subtotal** | **~61,900** | **~17,082** |
+| RP2350 SHA-256 accelerator (`drivers/crypto` + `pico_sha256` HAL) | 682 | 34 |
+| **crypto subtotal** | **~62,582** | **~17,116** |
 
-- **Flash (+65 KB):** the crypto stack above (~62 KB) plus ~1.2 KB of app
+- **Flash (+65 KB):** the crypto stack above (~62 KB) plus ~1.4 KB of app
   (`src/edhoc_oscore.c`). tf-psa-crypto is **2.1× the DTLS build's** (29.6 vs
   13.9 KB) because OSCORE adds HKDF-Extract/Expand and keeps the ~8.7 KB AES
   lookup tables in flash (`MBEDTLS_AES_ROM_TABLES=y`). X25519 is **not** in
@@ -141,10 +153,18 @@ half + compact25519 X25519, all over PSA). Δ vs base: **+64,948 flash /
   ECP/bignum/point-decompression), which is why there is no P-256-style ECC bloat.
 - **RAM (+25 KB, i.e. *less* than DTLS):** the **16 KB PSA heap** again, plus a
   **+6.5 KB CoAP-server thread stack** (`COAP_SERVER_STACK_SIZE=8192` vs base
-  2048 — the whole EDHOC handshake runs synchronously on that thread) and ~1.2 KB
+  2048 — the whole EDHOC handshake runs synchronously on that thread) and ~1.3 KB
   app. It stays below DTLS because `MBEDTLS_AES_ROM_TABLES=y` saves the ~8.7 KB
   AES RAM tables, libedhoc's stack/VLA backend adds no static RAM, and OSCORE
   keeps the base net-pool sizes rather than DTLS's larger ones.
+- **Transcript hash on the RP2350 SHA-256 accelerator:** libedhoc's suite-0 `.hash`
+  callback (a one-shot `psa_hash_compute`) is overridden in `edhoc_setup()` to run
+  on the on-chip block via Zephyr's crypto device API (`DEVICE_DT_GET` on the
+  `raspberrypi,pico-sha256` node, enabled in `app.overlay`; `CONFIG_CRYPTO=y` in
+  `prj.conf`). Only the three transcript hashes (TH_2/TH_3/TH_4) move — HKDF/HMAC
+  and AES-CCM stay on PSA (the block is hash-only; tf-psa-crypto 1.0 removed the
+  mbedTLS `SHA256_ALT` hook, so the PSA path can't be redirected). The base and DTLS
+  images build the driver (+682 B flash / +34 B RAM each) but never call it.
 
 ## Performance — CoAP round-trip latency
 
@@ -176,6 +196,13 @@ holds for the other two, and OSCORE has no reason to differ.)*
   the Cortex-M33, not the network — EDHOC method 3 does multiple scalar
   multiplications per side. It is a *one-time, per-boot* cost (a fresh EDHOC run
   re-keys OSCORE, SSN from 0), amortized over the session.
+- **Moving the transcript hash to the SHA-256 accelerator does not change these
+  latencies.** The handshake is X25519-bound (~1.6 s, ±~50 ms run-to-run); the three
+  transcript hashes are tens of bytes each, µs-scale on either the HW block or PSA
+  software, so any delta is far below the measurement noise. The per-request OSCORE
+  path (~3.8 ms) never touches the transcript hash — it is AEAD only — so it is
+  unaffected by construction. The figures above therefore carry over unchanged; they
+  were **not** re-measured for the accelerator switch.
 
 Not covered: sustained throughput, and a like-for-like ACM+UART latency baseline.
 
@@ -183,6 +210,11 @@ Not covered: sustained throughput, and a like-for-like ACM+UART latency baseline
 
 - Numbers refreshed 2026-07-03; they supersede an earlier revision (the app and
   module set changed, and that revision predated the OSCORE variant).
+- Memory re-measured after routing the EDHOC transcript hash through the RP2350
+  SHA-256 accelerator (`CONFIG_CRYPTO=y` + the `sha256` node): **+682 B flash and
+  +34–72 B RAM per image**, all three variants. Latency was **not** re-measured — the
+  change is latency-neutral (see the CoAP round-trip section). To confirm on the
+  bench: `just flash-oscore-perf && just latency-oscore` (and `-dtls` for DTLS).
 - Shell + logging are **off** in the measured images; the dev console adds the
   flash/RAM noted at the top and its synchronous UART I/O inflates latency.
 - The PSK identity/key (`zbook` / `zbook-dtls-psk!!` in `src/coap_server.c`, mirrored
