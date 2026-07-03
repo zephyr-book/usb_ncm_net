@@ -23,6 +23,35 @@ CoAP resources:
 This app is a sibling of `esp01_flasher` — same west workspace layout (T2), same
 USB device_next stack, same OpenOCD flash flow.
 
+## Choosing a variant (base / DTLS / OSCORE)
+
+`base` is for bring-up and the plaintext latency floor; the real choice for a
+secured link is **DTLS-PSK vs EDHOC/OSCORE**. The EDHOC handshake is slow (~1.6 s —
+software X25519 static-DH on the M33, **algorithm-bound**, not a compiler/placement
+issue; see [`docs/benchmarks.md`](docs/benchmarks.md)), but it is a **one-time,
+per-power-on** cost: under WFI/tickless idle the session survives sleep, so it is
+never re-paid on wake. So for a device that stays powered the handshake time is a
+**non-factor** — decide on what differs per request and at rest:
+
+- **Steady-state latency:** OSCORE ~3.95 ms vs DTLS ~3.30 ms per round trip
+  (~0.65 ms) — negligible.
+- **Footprint (over base):** OSCORE **+65 KB flash / +25 KB RAM** vs DTLS
+  **+40 / +34** — OSCORE is bigger in flash but *smaller* in RAM (AES tables in
+  flash, X25519 off-heap, no DTLS record/session buffers).
+- **Security posture:** EDHOC gives real (elliptic-curve) key agreement and a
+  per-device raw-public-key identity; PSK is a shared secret — no PKI identity, no
+  forward secrecy.
+
+| | base | DTLS-PSK | EDHOC + OSCORE |
+|---|---|---|---|
+| **Advantages** | smallest, simplest; plaintext latency floor for benchmarking | fast handshake (~20 ms); leanest secure flash; standard CoAPS | per-device EC identity + real key agreement; smaller RAM; end-to-end at the app layer |
+| **Drawbacks** | no security | shared secret only — no PKI identity, no forward secrecy; larger RAM | slow one-time handshake (~1.6 s); largest flash; more moving parts (EDHOC + OSCORE + X25519) |
+
+For a controlled point-to-point link that stays powered, either secure variant is
+fine: pick **DTLS** for the leanest, standard path, or **OSCORE** when per-device
+identity and real key agreement matter. Full numbers:
+[`docs/benchmarks.md`](docs/benchmarks.md).
+
 ## Architecture
 
 - **USB**: the RP2350 native USB device controller (`&usbd`, left disabled by the
