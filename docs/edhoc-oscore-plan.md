@@ -86,6 +86,36 @@ mbedTLS (v4.4.0 = tf-psa-crypto 4.x). Keep these for next time:
 - **west.yml:** libedhoc pinned `v1.14.1` (remote `kamil-kielbasa`,
   `deps/modules/lib/libedhoc`). Its git submodules are unused on Zephyr.
 
+## X25519 handshake cost — investigation (2026-07)
+
+Suite 0 cut the handshake from suite-2/P-256's ~4 s to **~1.6 s**, but that is
+still almost entirely **software X25519 static-DH on the M33** (no ECC accel): the
+Responder does ~4 scalar multiplications per handshake (ephemeral keygen, `G_XY`,
+`G_RX` for MAC_2, `G_IY` verifying MAC_3). On-board microbenchmark of
+`compact25519`/`c25519` (zbook/rp2350b/m33 @ 150 MHz):
+
+- **~383 ms per scalar mult at `-Os`** (~300 ms at `-O2`/`-O3`) ≈ **~45–57M
+  cycles** — ~10× slower than c25519 typically runs on a Cortex-M, because its
+  field arithmetic is **byte-limb (8-bit)**. That is the bottleneck, corroborated
+  two ways (microbench, and the ~1.6 s end-to-end handshake ÷ ~4).
+- **Algorithm-bound, not codegen- or memory-bound.** Two cheap levers were
+  measured and **rejected**: recompiling only the c25519 sources at `-O2`/`-O3`
+  (−22%); and relocating them from XIP flash into SRAM via `zephyr_code_relocate`
+  (−6.5%, so **compute-bound, not flash-bound**). Neither closes the ~80× gap to
+  DTLS-PSK's ~19.6 ms handshake.
+- **Only lever with real upside: a faster pure-C X25519 backend** (wider limbs; no
+  ARM asm, must stay constant-time). A formally-verified one is **already
+  vendored** — HACL\* Curve25519 in
+  `deps/modules/crypto/tf-psa-crypto/drivers/everest/` (enable via PSA + route the
+  suite-0 ECDH through it — no new dependency); curve25519-donna `c32` / BearSSL
+  `c25519_m31` are alternatives that need vendoring.
+
+**Decision: closed without swapping the backend.** Under WFI/tickless idle the
+session survives sleep, so the handshake is a **one-time, per-power-on** cost
+(never re-paid on wake) — a weak factor in the DTLS-vs-OSCORE choice, which turns
+on footprint + security posture instead. Numbers + rationale:
+[`docs/benchmarks.md`](benchmarks.md).
+
 ## EDHOC engine: why `uoscore-uedhoc` was abandoned (2026-07)
 
 Verified against **RFC 9528** (§3.3.2 identifiers, §5.3.2 message_2/context_2),
